@@ -261,6 +261,11 @@ header h1 span { color: var(--accent); }
 }
 .cand-item:hover { background: var(--surface2); border-color: var(--accent2); }
 .cand-dot { width: 7px; height: 7px; border-radius: 1px; flex-shrink: 0; }
+.cand-item.cand-placed { opacity: 0.38; }
+.cand-item.cand-placed:hover { opacity: 0.6; }
+.cand-item.cand-dict { border-left: 2px solid #555; }
+.cand-item.cand-dict:hover { border-left-color: var(--accent2); }
+.cand-dict-label { font-size: 0.55rem; color: var(--text2); margin-left: auto; white-space: nowrap; letter-spacing:0.05em; }
 .cand-badge { font-size: 0.55rem; color: var(--accent); background: rgba(255,69,58,0.12);
   padding: 1px 5px; border-radius: 2px; margin-left: auto; white-space: nowrap; }
 .no-cand { padding: 0.38rem 0.75rem; font-size: 0.68rem; color: var(--text2); font-style: italic; }
@@ -359,7 +364,10 @@ canvas { display: block; image-rendering: pixelated; }
     <div class="word-list-scroll" id="word-list"></div>
 
     <div class="candidates-panel">
-      <div class="cand-hdr">Candidate Words</div>
+      <div class="cand-hdr" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>Candidate Words</span>
+        <button class="btn" id="dict-btn" onclick="lookUpDictionary()" style="font-size:0.58rem;padding:0.15rem 0.5rem;">Dict 🔍</button>
+      </div>
       <div class="cand-sel" id="cand-sel">— select a cell —</div>
       <div class="cand-list" id="cand-list"></div>
     </div>
@@ -783,7 +791,12 @@ function getCandidates(selRow, selCol) {
       }
     }
   }
-  results.sort((a,b)=>b.overlapCount-a.overlapCount);
+  results.sort((a,b) => {
+    const aPlaced = placedWordSet.has(a.word) ? 1 : 0;
+    const bPlaced = placedWordSet.has(b.word) ? 1 : 0;
+    if (aPlaced !== bPlaced) return aPlaced - bPlaced;
+    return b.overlapCount - a.overlapCount;
+  });
   return results;
 }
 
@@ -809,7 +822,8 @@ function updateCandidates() {
     for(const item of items){
       const cat=catForWord(item.word);
       const dotStyle=cat?`background:${cat.color}`:'background:#555';
-      html+=`<div class="cand-item"
+      const isPlaced = placedWordSet.has(item.word);
+      html+=`<div class="cand-item${isPlaced?' cand-placed':''}"
         data-word="${encodeURIComponent(item.word)}"
         data-row="${item.row}" data-col="${item.col}" data-dir="${item.dir}"
         onmouseenter="showPreview(this)" onmouseleave="clearPreview()"
