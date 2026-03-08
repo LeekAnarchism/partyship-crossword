@@ -1055,14 +1055,39 @@ function exportState() {
 function importState() {
   document.getElementById('modal-textarea').value = '';
   document.getElementById('modal-title').textContent = 'Import';
-  document.getElementById('modal-desc').textContent = 'Paste your saved puzzle JSON below, then click Load.';
+  document.getElementById('modal-desc').textContent = 'Either choose a saved .json file, or paste the JSON text below.';
   document.getElementById('modal-note').textContent = '';
+  document.getElementById('modal-note').style.color = '';
   document.getElementById('modal-btns').innerHTML = `
-    <button class="btn" onclick="loadFromModal()">Load</button>
+    <label class="btn" style="cursor:pointer">
+      Choose file…
+      <input type="file" accept=".json" style="display:none" onchange="importFileChosen(this)">
+    </label>
+    <button class="btn" onclick="loadFromModal()">Load pasted JSON</button>
     <button class="btn" onclick="closeModal()">Cancel</button>
   `;
   document.getElementById('io-modal').classList.remove('hidden');
   setTimeout(()=>document.getElementById('modal-textarea').focus(), 50);
+}
+
+function importFileChosen(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const note = document.getElementById('modal-note');
+  note.style.color = '';
+  note.textContent = `Reading ${file.name}…`;
+  file.text().then(text => {
+    try {
+      loadStateJSON(text);
+      closeModal();
+    } catch(err) {
+      note.textContent = '⚠ Error: ' + err.message;
+      note.style.color = '#ff453a';
+    }
+  }).catch(err => {
+    note.textContent = '⚠ Could not read file: ' + err.message;
+    note.style.color = '#ff453a';
+  });
 }
 
 function copyModalText() {
