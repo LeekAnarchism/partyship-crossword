@@ -541,6 +541,7 @@ let discoverMode = false;
 // Map: "r,c" -> { maxOverlap, candidates: [{word,row,col,dir,overlapCount}] }
 let discoverMap = new Map();
 const collapsedDiscoverCells = new Set();
+let discoverRefreshTimer = null;
 
 // ═══════════════════════════════════════════════
 // CANVAS
@@ -880,22 +881,102 @@ function rescanPlacedWords() {
   placedWordSet = new Set(placedWords.map(p => p.word));
   renderWordList();
   saveToLocalStorage();
+  // Refresh discover results if open, debounced to avoid thrashing on rapid edits
+  if (discoverMode) {
+    clearTimeout(discoverRefreshTimer);
+    discoverRefreshTimer = setTimeout(() => {
+      runDiscover();
+      renderDiscoverSidebar();
+      draw(); // redraw so grid highlights update too
+    }, 400);
+  }
 }
 
-// Build per-cell category colour lookup for drawing
+// Build per-cell category colour lookup for drawing — returns Set of unique cats per cell
 function buildCellCatMap() {
-  const map = new Map(); // "r,c" -> cat
+  const map = new Map(); // "r,c" -> Cat[] (unique, in encounter order)
   for (const pw of placedWords) {
     const cat = pw.catId ? catById(pw.catId) : null;
+    if (!cat) continue;
     const letters = stripWord(pw.word);
     for (let i=0; i<letters.length; i++) {
       const r = pw.dir==='h' ? pw.row : pw.row+i;
       const c = pw.dir==='h' ? pw.col+i : pw.col;
       const key = `${r},${c}`;
-      if (!map.has(key)) map.set(key, cat);
+      if (!map.has(key)) map.set(key, []);
+      const arr = map.get(key);
+      if (!arr.includes(cat)) arr.push(cat);
     }
   }
   return map;
+}
+
+// Draw a cell background split into N equal segments from top-left,
+// each segment filled with the corresponding category colour.
+// Segments are defined by rays from top-left corner (0,0) of the cell
+// dividing the cell's area using the diagonal-fan approach.
+function drawCellSegments(x, y, cs, cats, alpha) {
+  const n = cats.length;
+  if (n === 0) return;
+  if (n === 1) {
+    ctx.fillStyle = catFillRgba(cats[0], alpha);
+    ctx.fillRect(x+1, y+1, cs-1, cs-1);
+    return;
+  }
+
+  // We'll clip to the cell interior
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x+1, y+1, cs-1, cs-1);
+  ctx.clip();
+
+  // Origin at top-left corner of cell
+  const ox = x, oy = y;
+
+  // Generate N+1 boundary rays from top-left.
+  // We trace the perimeter of the square clockwise from (cs,0) to form N equal-area segments.
+  // Total perimeter: 4 * cs. Each segment = 4*cs / n.
+  const perim = 4 * cs;
+  const segLen = perim / n;
+
+  // Convert a perimeter distance (starting from top-right corner, going clockwise) to a point
+  function perimPoint(d) {
+    d = ((d % perim) + perim) % perim;
+    if (d <= cs)        return [x + cs, y + d];          // right edge top→bottom
+    else if (d <= 2*cs) return [x + cs - (d-cs), y + cs]; // bottom edge right→left
+    else if (d <= 3*cs) return [x, y + cs - (d-2*cs)];    // left edge bottom→top
+    else                return [x + (d-3*cs), y];          // top edge left→right
+  }
+
+  for (let i = 0; i < n; i++) {
+    const d0 = i * segLen;
+    const d1 = (i + 1) * segLen;
+
+    ctx.beginPath();
+    ctx.moveTo(ox, oy); // always start from top-left
+
+    // Trace the perimeter arc from d0 to d1, hitting all corners in between
+    const [sx, sy] = perimPoint(d0);
+    ctx.lineTo(sx, sy);
+
+    // Walk through any corners between d0 and d1
+    const cornerDists = [0, cs, 2*cs, 3*cs, 4*cs];
+    for (const cd of cornerDists) {
+      if (cd > d0 && cd < d1) {
+        const [cx2, cy2] = perimPoint(cd);
+        ctx.lineTo(cx2, cy2);
+      }
+    }
+
+    const [ex2, ey2] = perimPoint(d1);
+    ctx.lineTo(ex2, ey2);
+    ctx.closePath();
+
+    ctx.fillStyle = catFillRgba(cats[i], alpha);
+    ctx.fill();
+  }
+
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════════
@@ -992,17 +1073,17 @@ function draw() {
 
       } else if (cell) {
         const sameWord = [...selWordIds].some(id => cell.wordIds.has(id));
-        const cat = catMap.get(key) || null;
+        const cats = catMap.get(key) || [];
+        const cat = cats[0] || null; // primary cat for letter colour
 
-        // Background
-        if (sameWord) {
-          ctx.fillStyle = cat ? catFillRgba(cat, 0.5) : 'rgba(10,132,255,0.25)';
-        } else if (cat) {
-          ctx.fillStyle = catFillRgba(cat, 0.2);
+        // Background — segmented if multiple categories
+        const bgAlpha = sameWord ? 0.5 : 0.2;
+        if (cats.length > 0) {
+          drawCellSegments(x, y, cs, cats, bgAlpha);
         } else {
-          ctx.fillStyle = '#2c2c2e';
+          ctx.fillStyle = sameWord ? 'rgba(10,132,255,0.25)' : '#2c2c2e';
+          ctx.fillRect(x+1, y+1, cs-1, cs-1);
         }
-        ctx.fillRect(x+1,y+1,cs-1,cs-1);
 
         // Letter
         if (sameWord) {
@@ -1407,6 +1488,26 @@ function placeFromCandidate(el){
   previewWord=null; updateCandidates();
 }
 
+function getOrCreateUnclassifiedCat() {
+  const existing = categories.find(c => c.id === 'cat_unclassified');
+  if (existing) return existing;
+  const cat = { id: 'cat_unclassified', name: 'Unclassified', color: '#636e72', words: [] };
+  categories.push(cat);
+  updateCatSelect();
+  return cat;
+}
+
+function placeFromDictCandidate(el) {
+  const word = decodeURIComponent(el.dataset.word);
+  // Add to Unclassified category if not already in any category
+  if (!catForWord(word)) {
+    const cat = getOrCreateUnclassifiedCat();
+    if (!cat.words.includes(word)) cat.words.push(word);
+  }
+  placeWordOnGrid(word, +el.dataset.row, +el.dataset.col, el.dataset.dir);
+  previewWord = null; updateCandidates();
+}
+
 // ═══════════════════════════════════════════════
 // DICTIONARY LOOKUP
 // ═══════════════════════════════════════════════
@@ -1529,7 +1630,7 @@ async function lookUpDictionary() {
         data-word="${encodeURIComponent(item.word)}"
         data-row="${item.row}" data-col="${item.col}" data-dir="${item.dir}"
         onmouseenter="showPreview(this)" onmouseleave="clearPreview()"
-        onclick="placeFromCandidate(this)">
+        onclick="placeFromDictCandidate(this)">
         <span class="cand-dot" style="background:#555"></span>
         <span>${esc(item.word)}</span>
         <span class="cand-dict-label">${item.overlapCount} overlaps</span>
