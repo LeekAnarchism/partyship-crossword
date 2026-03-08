@@ -525,6 +525,7 @@ function rescanPlacedWords() {
 
   placedWordSet = new Set(placedWords.map(p => p.word));
   renderWordList();
+  saveToLocalStorage();
 }
 
 // Build per-cell category colour lookup for drawing
@@ -573,7 +574,7 @@ function clearGrid() {
   for (let r=0;r<GRID_SIZE;r++) for (let c=0;c<GRID_SIZE;c++) cells[r][c]=null;
   placedWords=[]; placedWordSet=new Set();
   selectedCell=null; previewWord=null;
-  renderWordList(); updateCandidates(); draw();
+  renderWordList(); updateCandidates(); saveToLocalStorage(); draw();
 }
 
 // ═══════════════════════════════════════════════
@@ -1015,6 +1016,12 @@ function getStateJSON() {
   return JSON.stringify(data, null, 2);
 }
 
+const LS_KEY = 'puzzle_builder_state';
+
+function saveToLocalStorage() {
+  try { localStorage.setItem(LS_KEY, getStateJSON()); } catch(_) {}
+}
+
 function loadStateJSON(text) {
   const data = JSON.parse(text);
   if (data.categories) {
@@ -1034,6 +1041,7 @@ function loadStateJSON(text) {
   }
   collapsedCats.clear();
   updateCatSelect(); rescanPlacedWords(); draw();
+  saveToLocalStorage();
 }
 
 function exportState() {
@@ -1134,7 +1142,14 @@ window.addEventListener('keydown', e => {
 // ═══════════════════════════════════════════════
 updateCatSelect();
 updateCanvasSize();
-rescanPlacedWords();
+
+// Restore from localStorage if available, otherwise use default data
+const _saved = (() => { try { return localStorage.getItem(LS_KEY); } catch(_){return null;} })();
+if (_saved) {
+  try { loadStateJSON(_saved); } catch(_) { rescanPlacedWords(); }
+} else {
+  rescanPlacedWords();
+}
 updateCandidates();
 </script>
 </body>
