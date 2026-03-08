@@ -1008,12 +1008,17 @@ function catDrop(e, toCatId) {
 // EXPORT / IMPORT  (copy/paste — works on file://)
 // ═══════════════════════════════════════════════
 function getStateJSON() {
+  const sparseCells = [];
+  for (let r = 0; r < GRID_SIZE; r++)
+    for (let c = 0; c < GRID_SIZE; c++)
+      if (cells[r][c]) sparseCells.push(`${cells[r][c].letter}:${r}:${c}`);
+
   const data = {
-    version: 3,
+    version: 5,
     categories: categories.map(c=>({id:c.id, name:c.name, color:c.color, words:[...c.words]})),
-    cells: cells.map(row => row.map(c => c ? c.letter : null))
+    cells: sparseCells
   };
-  return JSON.stringify(data, null, 2);
+  return JSON.stringify(data);
 }
 
 const LS_KEY = 'puzzle_builder_state';
@@ -1034,10 +1039,28 @@ function loadStateJSON(text) {
   } else if (data.wordBank) {
     categories = [{id:'cat_imported',name:'Imported',color:'#74b9ff',words:[...data.wordBank]}];
   }
+  // Clear grid first
+  for (let r=0;r<GRID_SIZE;r++) for (let c=0;c<GRID_SIZE;c++) cells[r][c]=null;
   if (data.cells && data.cells.length > 0) {
-    for (let r=0;r<GRID_SIZE;r++)
-      for (let c=0;c<GRID_SIZE;c++)
-        cells[r][c] = (data.cells[r] && data.cells[r][c]) ? {letter:data.cells[r][c],wordIds:new Set()} : null;
+    if (typeof data.cells[0] === 'string') {
+      // v5 compact string format: "L:row:col"
+      for (const entry of data.cells) {
+        const [l, r, c] = entry.split(':');
+        const row = parseInt(r), col = parseInt(c);
+        if (row>=0&&row<GRID_SIZE&&col>=0&&col<GRID_SIZE)
+          cells[row][col] = {letter: l, wordIds: new Set()};
+      }
+    } else if (typeof data.cells[0] === 'object' && 'r' in data.cells[0]) {
+      // v4 sparse object format
+      for (const {r, c, l} of data.cells)
+        if (r>=0&&r<GRID_SIZE&&c>=0&&c<GRID_SIZE)
+          cells[r][c] = {letter: l, wordIds: new Set()};
+    } else {
+      // v3 full 100x100 array format (legacy)
+      for (let r=0;r<GRID_SIZE;r++)
+        for (let c=0;c<GRID_SIZE;c++)
+          if (data.cells[r]?.[c]) cells[r][c] = {letter:data.cells[r][c], wordIds:new Set()};
+    }
   }
   collapsedCats.clear();
   updateCatSelect(); rescanPlacedWords(); draw();
@@ -1050,14 +1073,23 @@ function exportState() {
   ta.value = json;
 
   document.getElementById('modal-title').textContent = 'Export';
-  document.getElementById('modal-desc').textContent = 'Copy this JSON and save it to a file to preserve your puzzle.';
+  document.getElementById('modal-desc').textContent = 'Download the file, or copy the JSON text to save manually.';
   document.getElementById('modal-note').textContent = 'Tip: Select All (⌘A) then Copy (⌘C)';
   document.getElementById('modal-btns').innerHTML = `
+    <button class="btn" onclick="downloadExport()">Download File</button>
     <button class="btn" onclick="copyModalText()">Copy to Clipboard</button>
     <button class="btn" onclick="closeModal()">Close</button>
   `;
   document.getElementById('io-modal').classList.remove('hidden');
   setTimeout(()=>{ ta.focus(); ta.select(); }, 50);
+}
+
+function downloadExport() {
+  const json = document.getElementById('modal-textarea').value;
+  const a = document.createElement('a');
+  a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(json);
+  a.download = 'puzzle.json';
+  a.click();
 }
 
 function importState() {
