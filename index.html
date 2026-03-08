@@ -327,6 +327,79 @@ canvas { display: block; image-rendering: pixelated; }
 .modal textarea:focus { border-color: var(--accent2); }
 .modal-btns { display: flex; gap: 0.5rem; justify-content: flex-end; flex-wrap: wrap; }
 .modal-note { font-size: 0.63rem; color: var(--text2); font-style: italic; }
+
+/* ── Discover sidebar ── */
+.discover-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.2s;
+}
+.discover-sidebar.hidden { width: 0; border: none; overflow: hidden; }
+
+.discover-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.discover-hdr-title {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1rem;
+  letter-spacing: 0.1em;
+  color: var(--accent3);
+}
+.discover-close {
+  font-size: 0.7rem; cursor: pointer; color: var(--text2); padding: 2px 5px;
+  border-radius: 3px; transition: background 0.1s;
+}
+.discover-close:hover { background: var(--surface2); color: var(--accent); }
+
+.discover-summary {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.65rem;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.discover-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+.discover-scroll::-webkit-scrollbar { width: 4px; }
+.discover-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.discover-cell-group {
+  border-bottom: 1px solid var(--border);
+}
+.discover-cell-hdr {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.65rem; color: var(--text2);
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 1;
+}
+.discover-cell-hdr:hover { background: var(--surface2); }
+.discover-cell-coord { color: var(--accent2); font-weight: 700; }
+.discover-cell-badge {
+  background: rgba(48,209,88,0.18);
+  color: var(--accent3);
+  font-size: 0.58rem;
+  padding: 1px 6px; border-radius: 10px; margin-left: auto;
+}
+.discover-cell-words { padding: 0.15rem 0; }
+.discover-cell-group.collapsed .discover-cell-words { display: none; }
+.discover-cell-group.collapsed .discover-cell-chevron { transform: rotate(-90deg); }
+.discover-cell-chevron { font-size: 0.55rem; color: var(--text2); transition: transform 0.15s; }
 </style>
 </head>
 <body>
@@ -342,6 +415,7 @@ canvas { display: block; image-rendering: pixelated; }
     <button class="btn" id="btn-undo" onclick="undo()" disabled title="Undo (⌘Z)">↩ Undo</button>
     <button class="btn" id="btn-redo" onclick="redo()" disabled title="Redo (⌘⇧Z)">↪ Redo</button>
     <button class="btn" onclick="clearGrid()">Clear Grid</button>
+    <button class="btn" id="btn-discover" onclick="toggleDiscover()" title="Find placement opportunities">🔎 Discover</button>
     <button class="btn" onclick="exportState()">Export</button>
     <button class="btn" onclick="importState()">Import</button>
   </div>
@@ -386,6 +460,16 @@ canvas { display: block; image-rendering: pixelated; }
       <div class="zoom-btn" onclick="zoom(0.8)">−</div>
       <div class="zoom-btn" onclick="zoomFit()" title="Fit view">⊡</div>
     </div>
+  </div>
+
+  <!-- Discover sidebar (right) -->
+  <div class="discover-sidebar hidden" id="discover-sidebar">
+    <div class="discover-hdr">
+      <span class="discover-hdr-title">🔎 Discover</span>
+      <span class="discover-close" onclick="closeDiscover()">✕ Close</span>
+    </div>
+    <div class="discover-summary" id="discover-summary"></div>
+    <div class="discover-scroll" id="discover-scroll"></div>
   </div>
 </div>
 
@@ -451,6 +535,12 @@ const UNDO_LIMIT = 50;
 let undoStack = [];
 let redoStack = [];
 let snapshotTimer = null;
+
+// discover mode
+let discoverMode = false;
+// Map: "r,c" -> { maxOverlap, candidates: [{word,row,col,dir,overlapCount}] }
+let discoverMap = new Map();
+const collapsedDiscoverCells = new Set();
 
 // ═══════════════════════════════════════════════
 // CANVAS
@@ -579,6 +669,170 @@ function updateUndoButtons() {
   const r = document.getElementById('btn-redo');
   if (u) u.disabled = undoStack.length === 0;
   if (r) r.disabled = redoStack.length === 0;
+}
+
+// ═══════════════════════════════════════════════
+// DISCOVER MODE
+// ═══════════════════════════════════════════════
+function runDiscover() {
+  discoverMap = new Map();
+  const words = allWords();
+
+  // For each filled cell, run getCandidates-style logic against word bank
+  // (only unplaced words, overlap >= 2)
+  for (let selRow = 0; selRow < GRID_SIZE; selRow++) {
+    for (let selCol = 0; selCol < GRID_SIZE; selCol++) {
+      if (!cells[selRow][selCol]?.letter) continue;
+
+      const cellCandidates = [];
+
+      for (const word of words) {
+        if (placedWordSet.has(word)) continue; // skip already placed
+        const letters = stripWord(word), len = letters.length;
+
+        for (const dir of ['h','v']) {
+          for (let i = 0; i < len; i++) {
+            const startRow = dir==='h' ? selRow : selRow-i;
+            const startCol = dir==='h' ? selCol-i : selCol;
+            if (startRow<0||startCol<0) continue;
+            if ((dir==='h'?startCol+len-1:startRow+len-1) >= GRID_SIZE) continue;
+            if (letters[i] !== cells[selRow][selCol].letter) continue;
+
+            let valid = true, ov = 0;
+            for (let j = 0; j < len; j++) {
+              const r = dir==='h' ? startRow : startRow+j;
+              const c = dir==='h' ? startCol+j : startCol;
+              const ex = cells[r][c];
+              if (ex) { if (ex.letter !== letters[j]) { valid=false; break; } ov++; }
+            }
+            if (!valid || ov < 2) continue;
+
+            cellCandidates.push({word, row:startRow, col:startCol, dir, overlapCount:ov});
+            break; // one placement per dir per word
+          }
+        }
+      }
+
+      if (cellCandidates.length > 0) {
+        const maxOv = Math.max(...cellCandidates.map(c => c.overlapCount));
+        const key = `${selRow},${selCol}`;
+        const existing = discoverMap.get(key);
+        if (!existing || maxOv > existing.maxOverlap) {
+          discoverMap.set(key, { maxOverlap: maxOv, candidates: cellCandidates });
+        }
+      }
+    }
+  }
+}
+
+function toggleDiscover() {
+  if (discoverMode) { closeDiscover(); return; }
+  discoverMode = true;
+  collapsedDiscoverCells.clear();
+  document.getElementById('btn-discover').style.background = 'rgba(48,209,88,0.25)';
+  document.getElementById('btn-discover').style.borderColor = '#30d158';
+  document.getElementById('btn-discover').style.color = '#30d158';
+  runDiscover();
+  renderDiscoverSidebar();
+  document.getElementById('discover-sidebar').classList.remove('hidden');
+  draw();
+}
+
+function closeDiscover() {
+  discoverMode = false;
+  discoverMap = new Map();
+  document.getElementById('discover-sidebar').classList.add('hidden');
+  const btn = document.getElementById('btn-discover');
+  btn.style.background = '';
+  btn.style.borderColor = '';
+  btn.style.color = '';
+  draw();
+}
+
+function renderDiscoverSidebar() {
+  const summary = document.getElementById('discover-summary');
+  const scroll  = document.getElementById('discover-scroll');
+
+  if (discoverMap.size === 0) {
+    summary.textContent = 'No unplaced words fit anywhere with 2+ overlaps.';
+    scroll.innerHTML = '';
+    return;
+  }
+
+  // Collect all unique candidates across all cells, dedupe by word+dir+pos
+  const allCands = new Map(); // word -> best candidate entry
+  for (const [, info] of discoverMap) {
+    for (const cand of info.candidates) {
+      const key = `${cand.word}|${cand.dir}|${cand.row}|${cand.col}`;
+      if (!allCands.has(key) || cand.overlapCount > allCands.get(key).overlapCount) {
+        allCands.set(key, cand);
+      }
+    }
+  }
+
+  const uniqueWords = new Set([...allCands.values()].map(c => c.word));
+  summary.textContent = `${uniqueWords.size} word${uniqueWords.size!==1?'s':''} can be placed · ${discoverMap.size} hot cell${discoverMap.size!==1?'s':''}`;
+
+  // Group by cell, sorted by maxOverlap desc
+  const entries = [...discoverMap.entries()]
+    .sort((a,b) => b[1].maxOverlap - a[1].maxOverlap);
+
+  let html = '';
+  for (const [key, info] of entries) {
+    const [r,c] = key.split(',').map(Number);
+    const isCollapsed = collapsedDiscoverCells.has(key);
+
+    // Sort candidates within this cell by overlap desc
+    const sorted = [...info.candidates].sort((a,b) => b.overlapCount - a.overlapCount);
+    const byDir = { h: sorted.filter(x=>x.dir==='h'), v: sorted.filter(x=>x.dir==='v') };
+
+    html += `<div class="discover-cell-group${isCollapsed?' collapsed':''}" data-key="${key}">
+      <div class="discover-cell-hdr" onclick="toggleDiscoverCell('${key}')">
+        <span class="discover-cell-chevron">▾</span>
+        <span class="discover-cell-coord">(${c},${r})</span>
+        <span style="color:var(--text2);font-size:0.6rem">= ${cells[r][c].letter}</span>
+        <span class="discover-cell-badge">${info.maxOverlap} overlaps · ${info.candidates.length} word${info.candidates.length!==1?'s':''}</span>
+      </div>
+      <div class="discover-cell-words">`;
+
+    for (const [dir, items] of Object.entries(byDir)) {
+      if (!items.length) continue;
+      html += `<div class="cand-dir">${dir==='h'?'→ Horizontal':'↓ Vertical'}</div>`;
+      for (const item of items) {
+        const cat = catForWord(item.word);
+        const dotStyle = cat ? `background:${cat.color}` : 'background:#555';
+        html += `<div class="cand-item"
+          data-word="${encodeURIComponent(item.word)}"
+          data-row="${item.row}" data-col="${item.col}" data-dir="${item.dir}"
+          onmouseenter="showPreview(this)" onmouseleave="clearPreview()"
+          onclick="discoverPlace(this)">
+          <span class="cand-dot" style="${dotStyle}"></span>
+          <span>${esc(item.word)}</span>
+          <span class="cand-badge">${item.overlapCount}</span>
+        </div>`;
+      }
+    }
+
+    html += `</div></div>`;
+  }
+
+  scroll.innerHTML = html;
+}
+
+function toggleDiscoverCell(key) {
+  if (collapsedDiscoverCells.has(key)) collapsedDiscoverCells.delete(key);
+  else collapsedDiscoverCells.add(key);
+  const el = document.querySelector(`.discover-cell-group[data-key="${key}"]`);
+  if (el) el.classList.toggle('collapsed', collapsedDiscoverCells.has(key));
+}
+
+function discoverPlace(el) {
+  const word = decodeURIComponent(el.dataset.word);
+  placeWordOnGrid(word, +el.dataset.row, +el.dataset.col, el.dataset.dir);
+  previewWord = null;
+  // Re-run discover to refresh results
+  runDiscover();
+  renderDiscoverSidebar();
 }
 
 // ═══════════════════════════════════════════════
@@ -782,6 +1036,31 @@ function draw() {
     ctx.setLineDash([4, 3]);
     ctx.strokeRect(rx+0.75, ry+0.75, rw, rh);
     ctx.setLineDash([]);
+  }
+
+  // Discover mode highlights
+  if (discoverMode && discoverMap.size > 0) {
+    for (const [key, info] of discoverMap) {
+      const [r, c] = key.split(',').map(Number);
+      const x = c*cs, y = r*cs;
+      // Green border
+      ctx.strokeStyle = '#30d158';
+      ctx.lineWidth = cs >= 14 ? 1.5 : 1;
+      ctx.strokeRect(x+1, y+1, cs-2, cs-2);
+      // Overlap count badge (top-right corner, only when zoomed in enough)
+      if (cs >= 16) {
+        const label = String(info.maxOverlap);
+        const bw = Math.max(10, cs * 0.38);
+        const bh = cs * 0.35;
+        ctx.fillStyle = 'rgba(48,209,88,0.85)';
+        ctx.fillRect(x + cs - bw, y, bw, bh);
+        ctx.fillStyle = '#000';
+        ctx.font = `bold ${Math.max(6, cs*0.26)}px "Courier Prime",monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, x + cs - bw/2, y + bh/2);
+      }
+    }
   }
 
   // Axis numbers
