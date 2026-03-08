@@ -1206,8 +1206,40 @@ function clearGrid() {
   renderWordList(); updateCandidates(); saveToLocalStorage(); draw();
 }
 
-// ═══════════════════════════════════════════════
-// DRAWING
+// Returns a Set of words that are genuinely placed more than once —
+// excluding cases where every instance is fully spanned by a longer placed
+// word in the same direction (i.e. it's an inline-run component, not a true duplicate).
+function getTrueDupWords() {
+  const wordPlacedCount = new Map();
+  for (const pw of placedWords) wordPlacedCount.set(pw.word, (wordPlacedCount.get(pw.word)||0)+1);
+
+  const dupWords = new Set();
+  for (const [word, count] of wordPlacedCount) {
+    if (count <= 1) continue;
+    const len = stripWord(word).length;
+    const instances = placedWords.filter(pw => pw.word === word);
+    // A word is a true duplicate only if at least two of its instances are NOT
+    // fully contained within a longer same-direction placed word.
+    const genuineInstances = instances.filter(inst => {
+      // Check if any longer placed word in the same direction fully spans this instance
+      return !placedWords.some(other => {
+        if (other.word === word) return false; // don't compare with self
+        if (other.dir !== inst.dir) return false;
+        const otherLen = stripWord(other.word).length;
+        if (otherLen <= len) return false;
+        if (inst.dir === 'h') {
+          return other.row === inst.row && other.col <= inst.col && other.col + otherLen >= inst.col + len;
+        } else {
+          return other.col === inst.col && other.row <= inst.row && other.row + otherLen >= inst.row + len;
+        }
+      });
+    });
+    if (genuineInstances.length > 1) dupWords.add(word);
+  }
+  return dupWords;
+}
+
+
 // ═══════════════════════════════════════════════
 function draw() {
   const cs = cellSize;
@@ -1365,11 +1397,7 @@ function draw() {
   }
 
   // Duplicate word outlines — red border over every cell of words placed more than once
-  const wordPlacedCount = new Map();
-  for (const pw of placedWords) {
-    wordPlacedCount.set(pw.word, (wordPlacedCount.get(pw.word) || 0) + 1);
-  }
-  const dupWords = new Set([...wordPlacedCount.entries()].filter(([,n])=>n>1).map(([w])=>w));
+  const dupWords = getTrueDupWords();
   if (dupWords.size > 0) {
     ctx.strokeStyle = '#ff453a';
     ctx.lineWidth = cs >= 14 ? 1.5 : 1;
@@ -2110,10 +2138,8 @@ function moveWordToCategory(word, fromCatId, toCatId) {
 function renderWordList() {
   const div=document.getElementById('word-list');
 
-  // Compute which words appear more than once in the grid
-  const wordPlacedCount = new Map();
-  for (const pw of placedWords) wordPlacedCount.set(pw.word, (wordPlacedCount.get(pw.word)||0)+1);
-  const dupWords = new Set([...wordPlacedCount.entries()].filter(([,n])=>n>1).map(([w])=>w));
+  // Compute which words are genuinely placed more than once
+  const dupWords = getTrueDupWords();
 
   let html='';
   for(const cat of categories) {
