@@ -1007,6 +1007,9 @@ function rescanPlacedWords() {
       for (let c=0; c<=GRID_SIZE-len; c++) {
         let ok = true;
         for (let i=0;i<len;i++) { if (cells[r][c+i]?.letter!==letters[i]){ok=false;break;} }
+        // Boundary check: cell before start and after end must be empty
+        if (ok && (c > 0 && cells[r][c-1])) ok = false;
+        if (ok && (c+len < GRID_SIZE && cells[r][c+len])) ok = false;
         if (ok) {
           const id = ++wordIdCounter;
           placedWords.push({id, word, catId: cat?.id||null, row:r, col:c, dir:'h'});
@@ -1019,6 +1022,9 @@ function rescanPlacedWords() {
       for (let r=0; r<=GRID_SIZE-len; r++) {
         let ok = true;
         for (let i=0;i<len;i++) { if (cells[r+i][c]?.letter!==letters[i]){ok=false;break;} }
+        // Boundary check: cell before start and after end must be empty
+        if (ok && (r > 0 && cells[r-1][c])) ok = false;
+        if (ok && (r+len < GRID_SIZE && cells[r+len][c])) ok = false;
         if (ok) {
           const id = ++wordIdCounter;
           placedWords.push({id, word, catId: cat?.id||null, row:r, col:c, dir:'v'});
