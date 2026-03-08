@@ -879,6 +879,39 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
   if ((e.ctrlKey||e.metaKey) && (e.key==='y' || (e.key==='z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
 
+  // ── Cmd/Ctrl + Backspace: delete word(s) under cursor, keeping shared letters ──
+  if ((e.ctrlKey||e.metaKey) && e.key==='Backspace') {
+    e.preventDefault();
+    if (!selectedCell) return;
+    const {row, col} = selectedCell;
+    const cell = cells[row][col];
+    if (!cell || !cell.wordIds.size) return;
+
+    // Find all placed words that pass through the selected cell
+    const wordsToDelete = placedWords.filter(pw => cell.wordIds.has(pw.id));
+    if (!wordsToDelete.length) return;
+
+    snapshot();
+
+    for (const pw of wordsToDelete) {
+      const letters = stripWord(pw.word);
+      for (let i = 0; i < letters.length; i++) {
+        const r = pw.dir==='h' ? pw.row : pw.row+i;
+        const c = pw.dir==='h' ? pw.col+i : pw.col;
+        const targetCell = cells[r][c];
+        if (!targetCell) continue;
+
+        // Only delete this cell if no OTHER placed word (outside wordsToDelete) uses it
+        const deletingIds = new Set(wordsToDelete.map(w => w.id));
+        const usedByOther = [...targetCell.wordIds].some(id => !deletingIds.has(id));
+        if (!usedByOther) cells[r][c] = null;
+      }
+    }
+
+    rescanPlacedWords(); draw();
+    return;
+  }
+
   // ── Escape: clear region or cell ──
   if (e.key==='Escape') {
     if (selRect) { selRect=null; draw(); document.getElementById('mode-bar').textContent='NAVIGATE'; return; }
