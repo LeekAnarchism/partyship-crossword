@@ -471,6 +471,8 @@ canvas { display: block; image-rendering: pixelated; }
     </div>
   </div>
   <div style="margin-left:auto;display:flex;gap:0.4rem;">
+    <button class="btn" onclick="surpriseMe()" title="Place one word automatically">🎲 Surprise me</button>
+    <button class="btn" onclick="autofill()" title="Automatically place all remaining words">⚡ Autofill</button>
     <button class="btn" id="btn-undo" onclick="undo()" disabled title="Undo (⌘Z)">↩ Undo</button>
     <button class="btn" id="btn-redo" onclick="redo()" disabled title="Redo (⌘⇧Z)">↪ Redo</button>
     <button class="btn" onclick="clearGrid()">Clear Grid</button>
@@ -1894,6 +1896,161 @@ function clearWordAllPlacements() {
   previewWordAll = null;
   draw();
 }
+
+
+
+// Get all valid placements for a word with their overlap count (0 overlaps allowed here)
+function getAllPlacementsWithOverlap(word) {
+  const letters = stripWord(word);
+  const len = letters.length;
+  const placements = [];
+  for (const dir of ['h','v']) {
+    const rowLimit = dir==='h' ? GRID_SIZE : GRID_SIZE - len + 1;
+    const colLimit = dir==='h' ? GRID_SIZE - len + 1 : GRID_SIZE;
+    for (let sr=0; sr<rowLimit; sr++) {
+      for (let sc=0; sc<colLimit; sc++) {
+        let valid = true;
+        for (let i=0; i<len; i++) {
+          const r = dir==='h' ? sr   : sr+i;
+          const c = dir==='h' ? sc+i : sc;
+          const ex = cells[r][c];
+          if (ex && ex.letter !== letters[i]) { valid=false; break; }
+        }
+        if (!valid) continue;
+        if (!placementPassesFlags(sr, sc, dir, len)) continue;
+        let ov = 0;
+        for (let i=0; i<len; i++) {
+          const r = dir==='h' ? sr : sr+i;
+          const c = dir==='h' ? sc+i : sc;
+          if (cells[r][c]) ov++;
+        }
+        placements.push({word, row:sr, col:sc, dir, overlaps:ov});
+      }
+    }
+  }
+  return placements;
+}
+
+function surpriseMe() {
+  // Collect unplaced words
+  const unplaced = allWords().filter(w => !placedWordSet.has(w));
+  if (!unplaced.length) { alert('All words are already placed!'); return; }
+
+  snapshot();
+
+  // Case 1: no words on grid — place longest word at centre
+  const hasAnything = placedWords.length > 0;
+  if (!hasAnything) {
+    const longest = [...unplaced].sort((a,b) => stripWord(b).length - stripWord(a).length)[0];
+    const letters = stripWord(longest);
+    const row = Math.floor(GRID_SIZE / 2);
+    const col = Math.floor((GRID_SIZE - letters.length) / 2);
+    for (let i=0; i<letters.length; i++) {
+      cells[row][col+i] = {letter: letters[i], wordIds: new Set()};
+    }
+    rescanPlacedWords(); draw();
+    return;
+  }
+
+  // Case 2: find placement with most overlaps (>=2)
+  let bestMultiOverlap = null;
+  let bestMultiScore = 1;
+  for (const word of unplaced) {
+    for (const p of getAllPlacementsWithOverlap(word)) {
+      if (p.overlaps > bestMultiScore) {
+        bestMultiScore = p.overlaps;
+        bestMultiOverlap = p;
+      }
+    }
+  }
+  if (bestMultiOverlap) {
+    placeAutofillWord(bestMultiOverlap);
+    return;
+  }
+
+  // Case 3: place longest word closest to centre of gravity
+  const placement = bestCogPlacement(unplaced);
+  if (placement) {
+    placeAutofillWord(placement);
+  } else {
+    alert('No valid placements found for any remaining word.');
+  }
+}
+
+function autofill() {
+  const unplaced = allWords().filter(w => !placedWordSet.has(w));
+  if (!unplaced.length) { alert('All words are already placed!'); return; }
+  snapshot();
+  let placed = 0;
+  while (true) {
+    const remaining = allWords().filter(w => !placedWordSet.has(w));
+    if (!remaining.length) break;
+
+    // Case 1: empty grid
+    if (!placedWords.length) {
+      const longest = [...remaining].sort((a,b) => stripWord(b).length - stripWord(a).length)[0];
+      const letters = stripWord(longest);
+      const row = Math.floor(GRID_SIZE / 2);
+      const col = Math.floor((GRID_SIZE - letters.length) / 2);
+      for (let i=0; i<letters.length; i++) cells[row][col+i] = {letter: letters[i], wordIds: new Set()};
+      rescanPlacedWords();
+      placed++;
+      continue;
+    }
+
+    // Case 2: best multi-overlap
+    let best = null, bestScore = 1;
+    for (const word of remaining) {
+      for (const p of getAllPlacementsWithOverlap(word)) {
+        if (p.overlaps > bestScore) { bestScore = p.overlaps; best = p; }
+      }
+    }
+    if (best) { placeAutofillWord(best); placed++; continue; }
+
+    // Case 3: longest word closest to CoG
+    const p = bestCogPlacement(remaining);
+    if (p) { placeAutofillWord(p); placed++; continue; }
+
+    break; // nothing could be placed
+  }
+  draw();
+  if (!placed) alert('No valid placements found for any remaining word.');
+}
+
+function placeAutofillWord({word, row, col, dir}) {
+  const letters = stripWord(word);
+  for (let i=0; i<letters.length; i++) {
+    const r = dir==='h' ? row : row+i;
+    const c = dir==='h' ? col+i : col;
+    if (!cells[r][c]) cells[r][c] = {letter:letters[i], wordIds:new Set()};
+  }
+  rescanPlacedWords();
+}
+
+function bestCogPlacement(unplaced) {
+  let sumR = 0, sumC = 0, count = 0;
+  for (let r=0; r<GRID_SIZE; r++)
+    for (let c=0; c<GRID_SIZE; c++)
+      if (cells[r][c]) { sumR+=r; sumC+=c; count++; }
+  const cogR = count ? sumR/count : GRID_SIZE/2;
+  const cogC = count ? sumC/count : GRID_SIZE/2;
+
+  const byLength = [...unplaced].sort((a,b) => stripWord(b).length - stripWord(a).length);
+  let bestPlacement = null, bestDist = Infinity;
+  for (const word of byLength) {
+    const len = stripWord(word).length;
+    for (const p of getAllPlacementsWithOverlap(word)) {
+      const midR = p.dir==='h' ? p.row : p.row + (len-1)/2;
+      const midC = p.dir==='h' ? p.col + (len-1)/2 : p.col;
+      const dist = Math.hypot(midR - cogR, midC - cogC);
+      if (dist < bestDist) { bestDist = dist; bestPlacement = p; }
+    }
+    if (bestPlacement) break;
+  }
+  return bestPlacement;
+}
+
+
 function placeFromCandidate(el){
   placeWordOnGrid(decodeURIComponent(el.dataset.word),+el.dataset.row,+el.dataset.col,el.dataset.dir);
   previewWord=null; updateCandidates();
