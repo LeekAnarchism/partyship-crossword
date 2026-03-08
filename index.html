@@ -1034,10 +1034,10 @@ function loadStateJSON(text) {
   } else if (data.wordBank) {
     categories = [{id:'cat_imported',name:'Imported',color:'#74b9ff',words:[...data.wordBank]}];
   }
-  if (data.cells) {
+  if (data.cells && data.cells.length > 0) {
     for (let r=0;r<GRID_SIZE;r++)
       for (let c=0;c<GRID_SIZE;c++)
-        cells[r][c] = data.cells[r][c] ? {letter:data.cells[r][c],wordIds:new Set()} : null;
+        cells[r][c] = (data.cells[r] && data.cells[r][c]) ? {letter:data.cells[r][c],wordIds:new Set()} : null;
   }
   collapsedCats.clear();
   updateCatSelect(); rescanPlacedWords(); draw();
