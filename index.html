@@ -803,6 +803,9 @@ function getCandidates(selRow, selCol) {
 function updateCandidates() {
   const sel=document.getElementById('cand-sel');
   const list=document.getElementById('cand-list');
+  // Always reset the dict button when the cell changes
+  const btn = document.getElementById('dict-btn');
+  if (btn) { btn.textContent = 'Dict 🔍'; btn.disabled = false; }
   if (!selectedCell){sel.textContent='— select a cell —';list.innerHTML='';return;}
   const {row,col}=selectedCell;
   const letter=cells[row][col]?.letter;
