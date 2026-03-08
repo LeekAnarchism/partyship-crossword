@@ -466,6 +466,9 @@ canvas { display: block; image-rendering: pixelated; }
     <div class="flag-toggle" id="flag-adjacent" onclick="toggleFlag('adjacent')" title="Block words that start or end immediately next to an existing occupied cell">
       <span class="flag-dot"></span>No adjacency
     </div>
+    <div class="flag-toggle" id="flag-sideadj" onclick="toggleFlag('sideadj')" title="Block words where a non-overlapping letter is adjacent (perpendicular) to an existing grid letter">
+      <span class="flag-dot"></span>No side touches
+    </div>
   </div>
   <div style="margin-left:auto;display:flex;gap:0.4rem;">
     <button class="btn" id="btn-undo" onclick="undo()" disabled title="Undo (⌘Z)">↩ Undo</button>
@@ -585,8 +588,10 @@ const collapsedCats = new Set();
 // Flag A: block placements where the new word runs in the same direction as
 //         one of the existing words it overlaps (inline run / word concatenation)
 // Flag B: block placements where the word starts or ends immediately adjacent
-//         to an existing occupied cell (no breathing room)
-const flags = { inline: false, adjacent: false };
+//         to an existing occupied cell (no breathing room at the ends)
+// Flag C: block placements where any letter of the candidate word has a
+//         perpendicular neighbour that is occupied but NOT part of the word itself
+const flags = { inline: false, adjacent: false, sideadj: false };
 
 function toggleFlag(name) {
   flags[name] = !flags[name];
@@ -1633,10 +1638,37 @@ function failsAdjacency(startRow, startCol, dir, len) {
   return false;
 }
 
+// Flag C — "No side touches"
+// Returns true (fail) if any letter of the candidate word has a neighbour
+// perpendicular to the word's direction that is occupied, UNLESS that neighbour
+// is itself one of the candidate word's own cells (i.e. it's an overlap cell).
+function failsSideAdjacency(startRow, startCol, dir, len) {
+  for (let i = 0; i < len; i++) {
+    const r = dir==='h' ? startRow : startRow+i;
+    const c = dir==='h' ? startCol+i : startCol;
+
+    // Only check cells where the candidate word does NOT already have a letter
+    // (overlap cells are fine — they're intentional crossings)
+    if (cells[r][c]) continue; // this cell is an overlap — skip side-check for it
+
+    // Perpendicular neighbours of this empty-in-grid cell
+    const neighbours = dir==='h'
+      ? [ [r-1, c], [r+1, c] ]   // above/below for horizontal word
+      : [ [r, c-1], [r, c+1] ];  // left/right for vertical word
+
+    for (const [nr, nc] of neighbours) {
+      if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE) continue;
+      if (cells[nr][nc]) return true; // occupied neighbour touching a non-overlap cell
+    }
+  }
+  return false;
+}
+
 // Master gate — call after confirming letter-compatibility
 function placementPassesFlags(startRow, startCol, dir, len) {
   if (flags.inline   && failsInlineRun(startRow, startCol, dir, len)) return false;
   if (flags.adjacent && failsAdjacency(startRow, startCol, dir, len)) return false;
+  if (flags.sideadj  && failsSideAdjacency(startRow, startCol, dir, len)) return false;
   return true;
 }
 
