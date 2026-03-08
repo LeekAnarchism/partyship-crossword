@@ -848,6 +848,139 @@ function placeFromCandidate(el){
 }
 
 // ═══════════════════════════════════════════════
+// DICTIONARY LOOKUP
+// ═══════════════════════════════════════════════
+let dictWords = null; // null = not loaded, [] = loaded
+
+async function loadDictionary() {
+  if (dictWords !== null) return dictWords;
+  const btn = document.getElementById('dict-btn');
+  btn.textContent = 'Loading…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('dict.txt');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    dictWords = text.split(/\r?\n/)
+      .map(w => w.trim().toUpperCase())
+      .filter(w => w.length >= 2 && /^[A-Z]+$/.test(w));
+  } catch(err) {
+    dictWords = null;
+    throw err;
+  } finally {
+    btn.textContent = 'Dict 🔍';
+    btn.disabled = false;
+  }
+  return dictWords;
+}
+
+// Find dictionary words that fit at the selected cell with overlap >= 2
+function getDictCandidates(selRow, selCol, dict) {
+  const anchorLetter = cells[selRow][selCol]?.letter;
+  if (!anchorLetter) return [];
+
+  const results = [];
+  const seen = new Set(); // deduplicate word+dir+start combos
+
+  for (const word of dict) {
+    const len = word.length;
+
+    for (const dir of ['h', 'v']) {
+      // Try each position of the word at which the anchor letter sits
+      for (let i = 0; i < len; i++) {
+        if (word[i] !== anchorLetter) continue;
+
+        const startRow = dir === 'h' ? selRow : selRow - i;
+        const startCol = dir === 'h' ? selCol - i : selCol;
+        if (startRow < 0 || startCol < 0) continue;
+        const endRow = dir === 'h' ? startRow : startRow + len - 1;
+        const endCol = dir === 'h' ? startCol + len - 1 : startCol;
+        if (endRow >= GRID_SIZE || endCol >= GRID_SIZE) continue;
+
+        let valid = true, overlapCount = 0;
+        for (let j = 0; j < len; j++) {
+          const r = dir === 'h' ? startRow : startRow + j;
+          const c = dir === 'h' ? startCol + j : startCol;
+          const ex = cells[r][c];
+          if (ex) {
+            if (ex.letter !== word[j]) { valid = false; break; }
+            overlapCount++;
+          }
+        }
+        if (!valid || overlapCount < 2) continue;
+
+        const key = `${word}|${dir}|${startRow}|${startCol}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({ word, row: startRow, col: startCol, dir, overlapCount });
+        break; // one placement per direction per word
+      }
+    }
+  }
+
+  results.sort((a, b) => b.overlapCount - a.overlapCount);
+  return results;
+}
+
+async function lookUpDictionary() {
+  if (!selectedCell) return;
+  const {row, col} = selectedCell;
+  if (!cells[row][col]?.letter) {
+    document.getElementById('cand-sel').textContent = `(${col}, ${row}) — type a letter first`;
+    return;
+  }
+
+  const list = document.getElementById('cand-list');
+  const btn  = document.getElementById('dict-btn');
+
+  // Show loading state
+  list.innerHTML = '<div class="no-cand">Loading dictionary…</div>';
+  btn.textContent = 'Loading…';
+  btn.disabled = true;
+
+  let dict;
+  try {
+    dict = await loadDictionary();
+  } catch(err) {
+    list.innerHTML = `<div class="no-cand">⚠ Could not load dict.txt — make sure it is in the same folder as the HTML file. (${err.message})</div>`;
+    return;
+  }
+
+  const dictCands = getDictCandidates(row, col, dict);
+
+  // Re-render normal candidates first, then append dict section
+  updateCandidates();
+
+  if (!dictCands.length) {
+    list.innerHTML += '<div class="cand-dir">📖 Dictionary — no matches with 2+ overlaps</div>';
+    return;
+  }
+
+  const byDir = { h: [], v: [] };
+  for (const c of dictCands) byDir[c.dir].push(c);
+
+  let html = '<div class="cand-dir" style="margin-top:0.4rem;color:#888;">📖 Dictionary matches</div>';
+  for (const [dir, items] of Object.entries(byDir)) {
+    if (!items.length) continue;
+    html += `<div class="cand-dir">${dir === 'h' ? '→ Horizontal' : '↓ Vertical'}</div>`;
+    for (const item of items) {
+      html += `<div class="cand-item cand-dict"
+        data-word="${encodeURIComponent(item.word)}"
+        data-row="${item.row}" data-col="${item.col}" data-dir="${item.dir}"
+        onmouseenter="showPreview(this)" onmouseleave="clearPreview()"
+        onclick="placeFromCandidate(this)">
+        <span class="cand-dot" style="background:#555"></span>
+        <span>${esc(item.word)}</span>
+        <span class="cand-dict-label">${item.overlapCount} overlaps</span>
+      </div>`;
+    }
+  }
+
+  list.innerHTML += html;
+}
+
+// ═══════════════════════════════════════════════
 // CATEGORY MANAGEMENT
 // ═══════════════════════════════════════════════
 const CAT_COLORS=['#ff6b6b','#4ecdc4','#ffd93d','#a29bfe','#fd79a8','#55efc4','#74b9ff','#e17055','#81ecec'];
