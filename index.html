@@ -1701,18 +1701,27 @@ function getAllPlacements(word) {
   const len = letters.length;
   const placements = [];
   for (const dir of ['h','v']) {
-    const rowMax = dir==='h' ? GRID_SIZE     : GRID_SIZE - len;
-    const colMax = dir==='h' ? GRID_SIZE - len : GRID_SIZE;
-    for (let sr=0; sr<=rowMax; sr++) {
-      for (let sc=0; sc<=colMax; sc++) {
+    const rowLimit = dir==='h' ? GRID_SIZE       : GRID_SIZE - len + 1;
+    const colLimit = dir==='h' ? GRID_SIZE - len + 1 : GRID_SIZE;
+    for (let sr=0; sr<rowLimit; sr++) {
+      for (let sc=0; sc<colLimit; sc++) {
         let valid = true;
         for (let i=0; i<len; i++) {
-          const r = dir==='h' ? sr     : sr+i;
-          const c = dir==='h' ? sc+i   : sc;
+          const r = dir==='h' ? sr   : sr+i;
+          const c = dir==='h' ? sc+i : sc;
           const ex = cells[r][c];
           if (ex && ex.letter !== letters[i]) { valid=false; break; }
         }
-        if (valid && placementPassesFlags(sr, sc, dir, len)) placements.push({word, row:sr, col:sc, dir});
+        if (valid && placementPassesFlags(sr, sc, dir, len)) {
+          // Count overlaps with existing cells
+          let ov = 0;
+          for (let i=0; i<len; i++) {
+            const r = dir==='h' ? sr : sr+i;
+            const c = dir==='h' ? sc+i : sc;
+            if (cells[r][c]) ov++;
+          }
+          if (ov >= 1) placements.push({word, row:sr, col:sc, dir});
+        }
       }
     }
   }
@@ -2003,7 +2012,7 @@ function renderWordList() {
           data-word="${encodeURIComponent(word)}" data-cat="${cat.id}"
           ondragstart="wordDragStart(event,'${cat.id}')"
           ondragend="wordDragEnd()"
-          onmouseenter="showWordAllPlacements('${encodeURIComponent(word)}')"
+          onmouseenter="showWordAllPlacements(this.dataset.word)"
           onmouseleave="clearWordAllPlacements()">
           <span class="word-dot"></span>
           <span class="word-label" title="${esc(word)}">${esc(word)}</span>
