@@ -339,6 +339,8 @@ canvas { display: block; image-rendering: pixelated; }
   </div>
   <div class="header-hint">Click grid → type · Drag to select region · ⌘C/X/V copy·cut·paste · Tab = flip direction · Drag words from sidebar</div>
   <div style="margin-left:auto;display:flex;gap:0.4rem;">
+    <button class="btn" id="btn-undo" onclick="undo()" disabled title="Undo (⌘Z)">↩ Undo</button>
+    <button class="btn" id="btn-redo" onclick="redo()" disabled title="Redo (⌘⇧Z)">↪ Redo</button>
     <button class="btn" onclick="clearGrid()">Clear Grid</button>
     <button class="btn" onclick="exportState()">Export</button>
     <button class="btn" onclick="importState()">Import</button>
@@ -444,6 +446,12 @@ let selDragging = false;      // true while mouse held for region drag
 let selDragStart = null;      // {row,col} where drag began
 let clipBoard = null;         // { rows: string[][], r1, c1 } internal clipboard
 
+// undo / redo
+const UNDO_LIMIT = 50;
+let undoStack = [];
+let redoStack = [];
+let snapshotTimer = null;
+
 // ═══════════════════════════════════════════════
 // CANVAS
 // ═══════════════════════════════════════════════
@@ -493,6 +501,84 @@ function esc(s) {
   return String(s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ═══════════════════════════════════════════════
+// UNDO / REDO
+// ═══════════════════════════════════════════════
+function captureSnapshot() {
+  // Reuse getStateJSON's sparse format — compact and complete
+  const sparseCells = [];
+  for (let r = 0; r < GRID_SIZE; r++)
+    for (let c = 0; c < GRID_SIZE; c++)
+      if (cells[r][c]) sparseCells.push(`${cells[r][c].letter}:${r}:${c}`);
+  return JSON.stringify({
+    cells: sparseCells,
+    categories: categories.map(c=>({id:c.id,name:c.name,color:c.color,words:[...c.words]}))
+  });
+}
+
+function applySnapshot(snap) {
+  const data = JSON.parse(snap);
+  // Restore cells
+  for (let r=0;r<GRID_SIZE;r++) for (let c=0;c<GRID_SIZE;c++) cells[r][c]=null;
+  for (const entry of data.cells) {
+    const [l,r,c] = entry.split(':');
+    const row=parseInt(r), col=parseInt(c);
+    if (row>=0&&row<GRID_SIZE&&col>=0&&col<GRID_SIZE)
+      cells[row][col]={letter:l, wordIds:new Set()};
+  }
+  // Restore categories
+  categories = data.categories.map(c=>({
+    id:c.id, name:c.name, color:c.color, words:[...c.words]
+  }));
+  updateCatSelect();
+  rescanPlacedWords();
+  draw();
+}
+
+// Call before any "big" destructive action (word place, paste, cut, clear, category edit)
+function snapshot() {
+  clearTimeout(snapshotTimer);
+  snapshotTimer = null;
+  undoStack.push(captureSnapshot());
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateUndoButtons();
+}
+
+// Call for individual letter keypresses — debounced so rapid typing = one undo step
+function snapshotSoon() {
+  if (snapshotTimer) return; // already pending — don't push again
+  // Push *before* the change so we capture the state prior to this burst of typing
+  undoStack.push(captureSnapshot());
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateUndoButtons();
+  snapshotTimer = setTimeout(() => { snapshotTimer = null; }, 600);
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  clearTimeout(snapshotTimer); snapshotTimer = null;
+  redoStack.push(captureSnapshot());
+  applySnapshot(undoStack.pop());
+  updateUndoButtons();
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(captureSnapshot());
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  applySnapshot(redoStack.pop());
+  updateUndoButtons();
+}
+
+function updateUndoButtons() {
+  const u = document.getElementById('btn-undo');
+  const r = document.getElementById('btn-redo');
+  if (u) u.disabled = undoStack.length === 0;
+  if (r) r.disabled = redoStack.length === 0;
 }
 
 // ═══════════════════════════════════════════════
@@ -562,6 +648,7 @@ function buildCellCatMap() {
 // GRID MUTATIONS
 // ═══════════════════════════════════════════════
 function placeWordOnGrid(word, row, col, dir) {
+  snapshot();
   const letters = stripWord(word);
   for (let i=0; i<letters.length; i++) {
     const r = dir==='h' ? row : row+i;
@@ -575,6 +662,7 @@ function placeWordOnGrid(word, row, col, dir) {
 
 function setCellLetter(row, col, letter) {
   if (row<0||row>=GRID_SIZE||col<0||col>=GRID_SIZE) return;
+  snapshotSoon();
   if (letter==='') cells[row][col] = null;
   else {
     if (!cells[row][col]) cells[row][col]={letter:letter.toUpperCase(),wordIds:new Set()};
@@ -585,6 +673,7 @@ function setCellLetter(row, col, letter) {
 
 function clearGrid() {
   if (!confirm('Clear the entire grid?')) return;
+  snapshot();
   for (let r=0;r<GRID_SIZE;r++) for (let c=0;c<GRID_SIZE;c++) cells[r][c]=null;
   placedWords=[]; placedWordSet=new Set();
   selectedCell=null; previewWord=null;
@@ -786,6 +875,10 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='x') { e.preventDefault(); copyRegion(true);  return; }
   if ((e.ctrlKey||e.metaKey) && e.key==='v') { e.preventDefault(); pasteRegion();      return; }
 
+  // ── Undo / Redo ──
+  if ((e.ctrlKey||e.metaKey) && e.key==='z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+  if ((e.ctrlKey||e.metaKey) && (e.key==='y' || (e.key==='z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
+
   // ── Escape: clear region or cell ──
   if (e.key==='Escape') {
     if (selRect) { selRect=null; draw(); document.getElementById('mode-bar').textContent='NAVIGATE'; return; }
@@ -800,6 +893,7 @@ window.addEventListener('keydown', e => {
   // ── Delete key on a region ──
   if ((e.key==='Backspace'||e.key==='Delete') && selRect) {
     e.preventDefault();
+    snapshot();
     const {r1,c1,r2,c2}=selRect;
     for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) cells[r][c]=null;
     rescanPlacedWords(); draw(); return;
@@ -852,6 +946,7 @@ function copyRegion(cut=false) {
   clipBoard = { rows, r1, c1 };
 
   if (cut) {
+    snapshot();
     for (let r=r1; r<=r2; r++)
       for (let c=c1; c<=c2; c++) cells[r][c] = null;
     rescanPlacedWords(); draw();
@@ -869,6 +964,7 @@ function copyRegion(cut=false) {
 
 function pasteRegion() {
   if (!clipBoard) return;
+  snapshot();
   // Paste origin: top-left of selRect, or selectedCell, or top-left of original copy
   let originRow = clipBoard.r1, originCol = clipBoard.c1;
   if (selRect) { originRow = selRect.r1; originCol = selRect.c1; }
@@ -1140,6 +1236,7 @@ const CAT_COLORS=['#ff6b6b','#4ecdc4','#ffd93d','#a29bfe','#fd79a8','#55efc4','#
 function addCategory() {
   const inp=document.getElementById('new-cat-input');
   const name=inp.value.trim(); if(!name) return;
+  snapshot();
   const id='cat'+(++catIdSeq)+'_'+Date.now();
   const color=CAT_COLORS[categories.length % CAT_COLORS.length];
   categories.push({id, name, color, words:[]});
@@ -1150,6 +1247,7 @@ function addCategory() {
 function deleteCategory(catId) {
   const cat=catById(catId); if(!cat) return;
   if(cat.words.length && !confirm(`Delete "${cat.name}"? Its ${cat.words.length} word(s) will move to the first remaining category.`)) return;
+  snapshot();
   const remaining=categories.filter(c=>c.id!==catId);
   if(remaining.length && cat.words.length) {
     for(const w of cat.words) remaining[0].words.push(w);
@@ -1187,6 +1285,7 @@ function addWord() {
   const val=winp.value.trim(); if(!val) return;
   const formatted=val.replace(/\b\w/g,c=>c.toUpperCase());
   if(allWords().includes(formatted)){winp.value='';return;}
+  snapshot();
   const cat=catById(csel.value)||categories[0];
   if(cat) cat.words.push(formatted);
   winp.value='';
@@ -1195,12 +1294,14 @@ function addWord() {
 
 function deleteWord(catId, word) {
   const cat=catById(catId); if(!cat) return;
+  snapshot();
   cat.words=cat.words.filter(w=>w!==word);
   rescanPlacedWords(); draw();
 }
 
 function moveWordToCategory(word, fromCatId, toCatId) {
   if(fromCatId===toCatId) return;
+  snapshot();
   const from=catById(fromCatId); if(from) from.words=from.words.filter(w=>w!==word);
   const to=catById(toCatId); if(to&&!to.words.includes(word)) to.words.push(word);
   rescanPlacedWords(); draw();
