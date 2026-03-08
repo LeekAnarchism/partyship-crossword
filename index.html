@@ -337,7 +337,7 @@ canvas { display: block; image-rendering: pixelated; }
     <button class="dir-btn active" id="btn-h" onclick="setDir('h')">→ H</button>
     <button class="dir-btn" id="btn-v" onclick="setDir('v')">↓ V</button>
   </div>
-  <div class="header-hint">Click grid → type · Click filled cell → candidates · Tab = flip direction · Drag words between categories</div>
+  <div class="header-hint">Click grid → type · Drag to select region · ⌘C/X/V copy·cut·paste · Tab = flip direction · Drag words from sidebar</div>
   <div style="margin-left:auto;display:flex;gap:0.4rem;">
     <button class="btn" onclick="clearGrid()">Clear Grid</button>
     <button class="btn" onclick="exportState()">Export</button>
@@ -437,6 +437,12 @@ const dragGhost = document.getElementById('drag-ghost');
 
 // collapsed categories
 const collapsedCats = new Set();
+
+// region selection (drag-select on canvas)
+let selRect = null;           // {r1,c1,r2,c2} normalised, null when none
+let selDragging = false;      // true while mouse held for region drag
+let selDragStart = null;      // {row,col} where drag began
+let clipBoard = null;         // { rows: string[][], r1, c1 } internal clipboard
 
 // ═══════════════════════════════════════════════
 // CANVAS
@@ -595,6 +601,11 @@ function draw() {
   ctx.fillStyle = '#1c1c1e';
   ctx.fillRect(0,0,total,total);
 
+  // Highlight central 30×30 region
+  const margin = 35; // (100 - 30) / 2
+  ctx.fillStyle = '#222224';
+  ctx.fillRect(margin * cs, margin * cs, 30 * cs, 30 * cs);
+
   ctx.strokeStyle = '#252527'; ctx.lineWidth = 0.5;
   for (let i=0;i<=GRID_SIZE;i++) {
     ctx.beginPath(); ctx.moveTo(i*cs,0); ctx.lineTo(i*cs,total); ctx.stroke();
@@ -670,6 +681,20 @@ function draw() {
     }
   }
 
+  // Selection rectangle overlay
+  if (selRect) {
+    const {r1,c1,r2,c2} = selRect;
+    const rx = c1*cs, ry = r1*cs;
+    const rw = (c2-c1+1)*cs, rh = (r2-r1+1)*cs;
+    ctx.fillStyle = 'rgba(10,132,255,0.10)';
+    ctx.fillRect(rx+1, ry+1, rw-1, rh-1);
+    ctx.strokeStyle = '#0a84ff';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(rx+0.75, ry+0.75, rw, rh);
+    ctx.setLineDash([]);
+  }
+
   // Axis numbers
   if (cs>=14) {
     ctx.fillStyle='#3a3a3c';
@@ -694,33 +719,98 @@ function cellFromEvent(e) {
   };
 }
 
-canvas.addEventListener('click', e => {
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
   const {row,col} = cellFromEvent(e);
   if (row<0||row>=GRID_SIZE||col<0||col>=GRID_SIZE) return;
-  previewWord = null;
-  if (selectedCell && selectedCell.row===row && selectedCell.col===col) {
-    currentDir = currentDir==='h'?'v':'h'; updateDirUI();
-  } else { selectedCell = {row,col}; }
-  document.getElementById('mode-bar').textContent = 'EDIT';
-  updateCandidates(); draw();
+  selDragging = true;
+  selDragStart = {row,col};
+  selRect = {r1:row,c1:col,r2:row,c2:col};
+  // Don't commit selected cell yet — wait for mouseup to distinguish click from drag
+  e.preventDefault();
 });
 
 canvas.addEventListener('mousemove', e => {
   const {row,col} = cellFromEvent(e);
   document.getElementById('coords').textContent = `${col}, ${row}`;
+  if (!selDragging || !selDragStart) return;
+  const r1=Math.min(selDragStart.row,row), r2=Math.max(selDragStart.row,row);
+  const c1=Math.min(selDragStart.col,col), c2=Math.max(selDragStart.col,col);
+  selRect = {r1,c1,r2,c2};
+  draw();
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (!selDragging) return;
+  selDragging = false;
+  const {row,col} = cellFromEvent(e);
+  const clampedRow = Math.max(0,Math.min(GRID_SIZE-1,row));
+  const clampedCol = Math.max(0,Math.min(GRID_SIZE-1,col));
+
+  const isDrag = selRect &&
+    (selRect.r2 > selRect.r1 || selRect.c2 > selRect.c1);
+
+  if (isDrag) {
+    // Region selected — keep selRect, clear single-cell selection
+    selectedCell = null;
+    previewWord = null;
+    document.getElementById('mode-bar').textContent = 'REGION';
+    updateCandidates();
+  } else {
+    // Simple click — behave as before
+    selRect = null;
+    previewWord = null;
+    if (selectedCell && selectedCell.row===clampedRow && selectedCell.col===clampedCol) {
+      currentDir = currentDir==='h'?'v':'h'; updateDirUI();
+    } else { selectedCell = {row:clampedRow, col:clampedCol}; }
+    document.getElementById('mode-bar').textContent = 'EDIT';
+    updateCandidates();
+  }
+  draw();
+});
+
+canvas.addEventListener('mouseleave', e => {
+  if (selDragging) {
+    // Finalise on leave too
+    selDragging = false;
+    draw();
+  }
 });
 
 window.addEventListener('keydown', e => {
-  if (!selectedCell || e.target.tagName==='INPUT') return;
+  if (e.target.tagName==='INPUT') return;
   if (!document.getElementById('io-modal').classList.contains('hidden')) return;
+
+  // ── Copy / Cut / Paste (work whether or not a cell is selected) ──
+  if ((e.ctrlKey||e.metaKey) && e.key==='c') { e.preventDefault(); copyRegion(false); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='x') { e.preventDefault(); copyRegion(true);  return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='v') { e.preventDefault(); pasteRegion();      return; }
+
+  // ── Escape: clear region or cell ──
+  if (e.key==='Escape') {
+    if (selRect) { selRect=null; draw(); document.getElementById('mode-bar').textContent='NAVIGATE'; return; }
+    if (selectedCell) {
+      selectedCell=null; previewWord=null;
+      document.getElementById('mode-bar').textContent='NAVIGATE';
+      updateCandidates(); draw();
+    }
+    return;
+  }
+
+  // ── Delete key on a region ──
+  if ((e.key==='Backspace'||e.key==='Delete') && selRect) {
+    e.preventDefault();
+    const {r1,c1,r2,c2}=selRect;
+    for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) cells[r][c]=null;
+    rescanPlacedWords(); draw(); return;
+  }
+
+  // ── Single-cell editing (requires selectedCell) ──
+  if (!selectedCell) return;
   const {row,col} = selectedCell;
 
   if (e.key==='Tab') { e.preventDefault(); currentDir=currentDir==='h'?'v':'h'; updateDirUI(); return; }
-  if (e.key==='Escape') {
-    selectedCell=null; previewWord=null;
-    document.getElementById('mode-bar').textContent='NAVIGATE';
-    updateCandidates(); draw(); return;
-  }
+
   if (e.key==='Backspace'||e.key==='Delete') {
     e.preventDefault();
     setCellLetter(row,col,'');
@@ -745,6 +835,65 @@ function setDir(d){currentDir=d;updateDirUI();}
 function updateDirUI(){
   document.getElementById('btn-h').classList.toggle('active',currentDir==='h');
   document.getElementById('btn-v').classList.toggle('active',currentDir==='v');
+}
+
+// ═══════════════════════════════════════════════
+// COPY / CUT / PASTE
+// ═══════════════════════════════════════════════
+function copyRegion(cut=false) {
+  if (!selRect) return;
+  const {r1,c1,r2,c2} = selRect;
+  const rows = [];
+  for (let r=r1; r<=r2; r++) {
+    const row = [];
+    for (let c=c1; c<=c2; c++) row.push(cells[r][c]?.letter || '');
+    rows.push(row);
+  }
+  clipBoard = { rows, r1, c1 };
+
+  if (cut) {
+    for (let r=r1; r<=r2; r++)
+      for (let c=c1; c<=c2; c++) cells[r][c] = null;
+    rescanPlacedWords(); draw();
+  }
+
+  // Also write to system clipboard as plain text grid
+  const text = rows.map(r => r.join('\t')).join('\n');
+  try { navigator.clipboard.writeText(text).catch(()=>{}); } catch(_){}
+
+  // Flash the mode bar
+  const bar = document.getElementById('mode-bar');
+  bar.textContent = cut ? 'CUT' : 'COPIED';
+  setTimeout(() => bar.textContent = selRect ? 'REGION' : 'EDIT', 800);
+}
+
+function pasteRegion() {
+  if (!clipBoard) return;
+  // Paste origin: top-left of selRect, or selectedCell, or top-left of original copy
+  let originRow = clipBoard.r1, originCol = clipBoard.c1;
+  if (selRect) { originRow = selRect.r1; originCol = selRect.c1; }
+  else if (selectedCell) { originRow = selectedCell.row; originCol = selectedCell.col; }
+
+  const { rows } = clipBoard;
+  for (let dr=0; dr<rows.length; dr++) {
+    for (let dc=0; dc<rows[dr].length; dc++) {
+      const r=originRow+dr, c=originCol+dc;
+      if (r<0||r>=GRID_SIZE||c<0||c>=GRID_SIZE) continue;
+      const letter = rows[dr][dc];
+      if (letter) {
+        if (!cells[r][c]) cells[r][c]={letter,wordIds:new Set()};
+        else cells[r][c].letter=letter;
+      }
+    }
+  }
+
+  // Update selRect to show the pasted region
+  selRect = {
+    r1: originRow, c1: originCol,
+    r2: originRow+rows.length-1,
+    c2: originCol+rows[0].length-1
+  };
+  rescanPlacedWords(); draw();
 }
 
 // ═══════════════════════════════════════════════
@@ -1124,9 +1273,9 @@ function updateCatSelect() {
 // ═══════════════════════════════════════════════
 function wordDragStart(e, catId) {
   const word=decodeURIComponent(e.currentTarget.dataset.word);
-  dragState={word, fromCatId:catId};
+  dragState={word, fromCatId:catId, toGrid:false};
   e.currentTarget.classList.add('dragging');
-  e.dataTransfer.effectAllowed='move';
+  e.dataTransfer.effectAllowed='copyMove';
   e.dataTransfer.setData('text/plain', word);
   dragGhost.textContent=word;
   dragGhost.style.display='block';
@@ -1134,6 +1283,9 @@ function wordDragStart(e, catId) {
 }
 
 function wordDragEnd() {
+  // If the drop didn't land on the grid, clear any lingering preview
+  previewWord = null;
+  draw();
   dragState=null;
   dragGhost.style.display='none';
   document.querySelectorAll('.word-item.dragging').forEach(el=>el.classList.remove('dragging'));
@@ -1153,6 +1305,53 @@ function catDrop(e, toCatId) {
   if(!dragState) return;
   moveWordToCategory(dragState.word, dragState.fromCatId, toCatId);
 }
+
+// ── Grid drag-over / drop ──────────────────────────────────────────
+function gridCellFromDragEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  const col = Math.floor((e.clientX - rect.left) * sx / cellSize);
+  const row = Math.floor((e.clientY - rect.top)  * sy / cellSize);
+  return { row, col };
+}
+
+viewport.addEventListener('dragover', e => {
+  if (!dragState) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+
+  const { row, col } = gridCellFromDragEvent(e);
+  if (row < 0 || row >= GRID_SIZE || col < 0 || col >= GRID_SIZE) {
+    previewWord = null;
+  } else {
+    previewWord = { word: dragState.word, row, col, dir: currentDir };
+  }
+  draw();
+});
+
+viewport.addEventListener('dragleave', e => {
+  // Only clear if leaving the viewport entirely
+  if (!viewport.contains(e.relatedTarget)) {
+    previewWord = null;
+    draw();
+  }
+});
+
+viewport.addEventListener('drop', e => {
+  e.preventDefault();
+  if (!dragState) return;
+
+  const { row, col } = gridCellFromDragEvent(e);
+  if (row >= 0 && row < GRID_SIZE && col >= 0 && col < GRID_SIZE) {
+    placeWordOnGrid(dragState.word, row, col, currentDir);
+  }
+  previewWord = null;
+  dragState = null;
+  dragGhost.style.display = 'none';
+  document.querySelectorAll('.word-item.dragging').forEach(el => el.classList.remove('dragging'));
+  draw();
+});
 
 // ═══════════════════════════════════════════════
 // EXPORT / IMPORT  (copy/paste — works on file://)
@@ -1333,6 +1532,14 @@ if (_saved) {
   rescanPlacedWords();
 }
 updateCandidates();
+
+// Scroll so the central 30×30 region is centred in the viewport
+requestAnimationFrame(() => {
+  const regionStart = 35; // (100 - 30) / 2
+  const regionCentre = (regionStart + 15) * cellSize; // centre of 30x30
+  viewport.scrollLeft = regionCentre - viewport.clientWidth  / 2;
+  viewport.scrollTop  = regionCentre - viewport.clientHeight / 2;
+});
 </script>
 </body>
 </html>
