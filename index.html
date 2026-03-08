@@ -1303,6 +1303,32 @@ function draw() {
     }
   }
 
+  // Single-overlap word outlines — pale blue border on words with exactly 1 shared cell
+  const lonelyWords = new Set();
+  for (const pw of placedWords) {
+    const letters = stripWord(pw.word);
+    let sharedCells = 0;
+    for (let i = 0; i < letters.length; i++) {
+      const r = pw.dir==='h' ? pw.row : pw.row+i;
+      const c = pw.dir==='h' ? pw.col+i : pw.col;
+      if (cells[r][c]?.wordIds.size > 1) sharedCells++;
+    }
+    if (sharedCells === 1) lonelyWords.add(pw.id);
+  }
+  if (lonelyWords.size > 0) {
+    ctx.strokeStyle = 'rgba(130, 200, 255, 0.55)';
+    ctx.lineWidth = cs >= 14 ? 1.5 : 1;
+    for (const pw of placedWords) {
+      if (!lonelyWords.has(pw.id)) continue;
+      const letters = stripWord(pw.word);
+      for (let i = 0; i < letters.length; i++) {
+        const r = pw.dir==='h' ? pw.row : pw.row+i;
+        const c = pw.dir==='h' ? pw.col+i : pw.col;
+        ctx.strokeRect(c*cs+1, r*cs+1, cs-2, cs-2);
+      }
+    }
+  }
+
   // Duplicate word outlines — red border over every cell of words placed more than once
   const wordPlacedCount = new Map();
   for (const pw of placedWords) {
