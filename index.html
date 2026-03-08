@@ -238,6 +238,13 @@ header h1 span { color: var(--accent); }
 }
 .word-item:hover .word-del { opacity: 1; }
 .word-del:hover { color: var(--accent); }
+.word-warn {
+  font-size: 0.65rem;
+  color: #ff453a;
+  flex-shrink: 0;
+  margin-right: 1px;
+  title: "Placed more than once";
+}
 
 /* Candidates panel */
 .candidates-panel {
@@ -1282,7 +1289,25 @@ function draw() {
     }
   }
 
-  // Axis numbers
+  // Duplicate word outlines — red border over every cell of words placed more than once
+  const wordPlacedCount = new Map();
+  for (const pw of placedWords) {
+    wordPlacedCount.set(pw.word, (wordPlacedCount.get(pw.word) || 0) + 1);
+  }
+  const dupWords = new Set([...wordPlacedCount.entries()].filter(([,n])=>n>1).map(([w])=>w));
+  if (dupWords.size > 0) {
+    ctx.strokeStyle = '#ff453a';
+    ctx.lineWidth = cs >= 14 ? 1.5 : 1;
+    for (const pw of placedWords) {
+      if (!dupWords.has(pw.word)) continue;
+      const letters = stripWord(pw.word);
+      for (let i=0; i<letters.length; i++) {
+        const r = pw.dir==='h' ? pw.row : pw.row+i;
+        const c = pw.dir==='h' ? pw.col+i : pw.col;
+        ctx.strokeRect(c*cs+1, r*cs+1, cs-2, cs-2);
+      }
+    }
+  }
   if (cs>=14) {
     ctx.fillStyle='#3a3a3c';
     ctx.font=`${Math.max(6,cs*0.28)}px "Courier Prime",monospace`;
@@ -1982,6 +2007,12 @@ function moveWordToCategory(word, fromCatId, toCatId) {
 // ═══════════════════════════════════════════════
 function renderWordList() {
   const div=document.getElementById('word-list');
+
+  // Compute which words appear more than once in the grid
+  const wordPlacedCount = new Map();
+  for (const pw of placedWords) wordPlacedCount.set(pw.word, (wordPlacedCount.get(pw.word)||0)+1);
+  const dupWords = new Set([...wordPlacedCount.entries()].filter(([,n])=>n>1).map(([w])=>w));
+
   let html='';
   for(const cat of categories) {
     const isCollapsed=collapsedCats.has(cat.id);
@@ -2007,7 +2038,8 @@ function renderWordList() {
         ondrop="catDrop(event,'${cat.id}')">`;
 
     for(const word of cat.words) {
-      const isPlaced=placedWordSet.has(word);
+      const isPlaced = placedWordSet.has(word);
+      const isDup    = dupWords.has(word);
       html+=`<div class="word-item${isPlaced?' placed':''}" draggable="true"
           data-word="${encodeURIComponent(word)}" data-cat="${cat.id}"
           ondragstart="wordDragStart(event,'${cat.id}')"
@@ -2015,6 +2047,7 @@ function renderWordList() {
           onmouseenter="showWordAllPlacements(this.dataset.word)"
           onmouseleave="clearWordAllPlacements()">
           <span class="word-dot"></span>
+          ${isDup ? `<span class="word-warn" title="This word appears more than once in the grid">⚠</span>` : ''}
           <span class="word-label" title="${esc(word)}">${esc(word)}</span>
           <select class="word-move-select" title="Move to category"
             onchange="moveWordToCategory('${esc(word)}','${cat.id}',this.value);this.value='${cat.id}'"
