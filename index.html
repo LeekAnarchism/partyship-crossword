@@ -597,7 +597,6 @@ function toggleFlag(name) {
   flags[name] = !flags[name];
   const el = document.getElementById('flag-' + name);
   if (el) el.classList.toggle('flag-on', flags[name]);
-  // Refresh candidates and discover if open
   updateCandidates();
   if (discoverMode) { runDiscover(); renderDiscoverSidebar(); draw(); }
 }
@@ -996,25 +995,19 @@ function rescanPlacedWords() {
 
   placedWords = []; wordIdCounter = 0;
 
+  // Pass 1: collect all letter-matching positions for every word
+  const candidates = [];
   for (const word of allWords()) {
     const letters = stripWord(word);
     if (!letters.length) continue;
     const len = letters.length;
     const cat = catForWord(word);
-
     // horizontal
     for (let r=0; r<GRID_SIZE; r++) {
       for (let c=0; c<=GRID_SIZE-len; c++) {
         let ok = true;
         for (let i=0;i<len;i++) { if (cells[r][c+i]?.letter!==letters[i]){ok=false;break;} }
-        // Boundary check: cell before start and after end must be empty
-        if (ok && (c > 0 && cells[r][c-1])) ok = false;
-        if (ok && (c+len < GRID_SIZE && cells[r][c+len])) ok = false;
-        if (ok) {
-          const id = ++wordIdCounter;
-          placedWords.push({id, word, catId: cat?.id||null, row:r, col:c, dir:'h'});
-          for (let i=0;i<len;i++) cells[r][c+i].wordIds.add(id);
-        }
+        if (ok) candidates.push({word, catId: cat?.id||null, row:r, col:c, dir:'h', len});
       }
     }
     // vertical
@@ -1022,14 +1015,56 @@ function rescanPlacedWords() {
       for (let r=0; r<=GRID_SIZE-len; r++) {
         let ok = true;
         for (let i=0;i<len;i++) { if (cells[r+i][c]?.letter!==letters[i]){ok=false;break;} }
-        // Boundary check: cell before start and after end must be empty
-        if (ok && (r > 0 && cells[r-1][c])) ok = false;
-        if (ok && (r+len < GRID_SIZE && cells[r+len][c])) ok = false;
-        if (ok) {
-          const id = ++wordIdCounter;
-          placedWords.push({id, word, catId: cat?.id||null, row:r, col:c, dir:'v'});
-          for (let i=0;i<len;i++) cells[r+i][c].wordIds.add(id);
-        }
+        if (ok) candidates.push({word, catId: cat?.id||null, row:r, col:c, dir:'v', len});
+      }
+    }
+  }
+
+  // Build a coverage map: "dir:r,c" -> true, for all cells covered by any candidate.
+  // This lets us check if a boundary cell is part of another same-direction word.
+  const covered = new Set();
+  for (const cand of candidates) {
+    const letters = stripWord(cand.word);
+    for (let i=0; i<letters.length; i++) {
+      const r = cand.dir==='h' ? cand.row : cand.row+i;
+      const c = cand.dir==='h' ? cand.col+i : cand.col;
+      covered.add(`${cand.dir}:${r},${c}`);
+    }
+  }
+
+  // Pass 2: boundary check — a boundary cell only blocks if it is NOT covered
+  // by another same-direction candidate AND has no perpendicular neighbour.
+  for (const cand of candidates) {
+    const {word, catId, row, col, dir, len} = cand;
+    let ok = true;
+
+    const boundaryOk = (br, bc) => {
+      // Allowed if another word-bank word (same dir) covers this cell
+      if (covered.has(`${dir}:${br},${bc}`)) return true;
+      // Allowed if it has a perpendicular neighbour (it's a crossing letter)
+      if (dir === 'h') {
+        return (br > 0 && cells[br-1][bc]) || (br < GRID_SIZE-1 && cells[br+1][bc]);
+      } else {
+        return (bc > 0 && cells[br][bc-1]) || (bc < GRID_SIZE-1 && cells[br][bc+1]);
+      }
+    };
+
+    if (dir === 'h') {
+      if (ok && col > 0 && cells[row][col-1])       ok = boundaryOk(row, col-1);
+      if (ok && col+len < GRID_SIZE && cells[row][col+len]) ok = boundaryOk(row, col+len);
+    } else {
+      if (ok && row > 0 && cells[row-1][col])       ok = boundaryOk(row-1, col);
+      if (ok && row+len < GRID_SIZE && cells[row+len][col]) ok = boundaryOk(row+len, col);
+    }
+
+    if (ok) {
+      const id = ++wordIdCounter;
+      placedWords.push({id, word, catId, row, col, dir});
+      const letters = stripWord(word);
+      for (let i=0; i<letters.length; i++) {
+        const r = dir==='h' ? row : row+i;
+        const c = dir==='h' ? col+i : col;
+        cells[r][c].wordIds.add(id);
       }
     }
   }
