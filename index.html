@@ -400,6 +400,44 @@ canvas { display: block; image-rendering: pixelated; }
 .discover-cell-group.collapsed .discover-cell-words { display: none; }
 .discover-cell-group.collapsed .discover-cell-chevron { transform: rotate(-90deg); }
 .discover-cell-chevron { font-size: 0.55rem; color: var(--text2); transition: transform 0.15s; }
+
+.discover-cell-group.discover-highlighted > .discover-cell-hdr {
+  background: rgba(48,209,88,0.12);
+  border-left: 2px solid var(--accent3);
+}
+.discover-cell-group.discover-focused > .discover-cell-hdr {
+  background: rgba(48,209,88,0.22);
+  border-left: 3px solid var(--accent3);
+  color: var(--accent3);
+}
+.discover-cell-group.discover-dimmed {
+  opacity: 0.28;
+}
+
+/* Feature flag toggles */
+.flag-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.55rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: 'Courier Prime', monospace;
+  font-size: 0.62rem;
+  color: var(--text2);
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  user-select: none;
+}
+.flag-toggle:hover { background: var(--border); }
+.flag-toggle.flag-on { border-color: var(--accent); color: var(--accent); background: rgba(255,69,58,0.1); }
+.flag-toggle .flag-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--border); flex-shrink: 0; transition: background 0.1s;
+}
+.flag-toggle.flag-on .flag-dot { background: var(--accent); }
 </style>
 </head>
 <body>
@@ -411,6 +449,14 @@ canvas { display: block; image-rendering: pixelated; }
     <button class="dir-btn" id="btn-v" onclick="setDir('v')">↓ V</button>
   </div>
   <div class="header-hint">Click grid → type · Drag to select region · ⌘C/X/V copy·cut·paste · Tab = flip direction · Drag words from sidebar</div>
+  <div style="display:flex;gap:0.3rem;flex-shrink:0;">
+    <div class="flag-toggle" id="flag-inline" onclick="toggleFlag('inline')" title="Block words that run inline with (same direction as) an existing word they overlap">
+      <span class="flag-dot"></span>No inline runs
+    </div>
+    <div class="flag-toggle" id="flag-adjacent" onclick="toggleFlag('adjacent')" title="Block words that start or end immediately next to an existing occupied cell">
+      <span class="flag-dot"></span>No adjacency
+    </div>
+  </div>
   <div style="margin-left:auto;display:flex;gap:0.4rem;">
     <button class="btn" id="btn-undo" onclick="undo()" disabled title="Undo (⌘Z)">↩ Undo</button>
     <button class="btn" id="btn-redo" onclick="redo()" disabled title="Redo (⌘⇧Z)">↪ Redo</button>
@@ -515,6 +561,7 @@ let placedWordSet = new Set();
 let selectedCell = null;
 let currentDir = 'h';
 let previewWord = null;
+let previewWordAll = null; // [{word,row,col,dir}] — all placements shown when hovering sidebar word
 let cellSize = 14;
 
 // drag
@@ -523,6 +570,22 @@ const dragGhost = document.getElementById('drag-ghost');
 
 // collapsed categories
 const collapsedCats = new Set();
+
+// ── Feature flags ──────────────────────────────
+// Flag A: block placements where the new word runs in the same direction as
+//         one of the existing words it overlaps (inline run / word concatenation)
+// Flag B: block placements where the word starts or ends immediately adjacent
+//         to an existing occupied cell (no breathing room)
+const flags = { inline: false, adjacent: false };
+
+function toggleFlag(name) {
+  flags[name] = !flags[name];
+  const el = document.getElementById('flag-' + name);
+  if (el) el.classList.toggle('flag-on', flags[name]);
+  // Refresh candidates and discover if open
+  updateCandidates();
+  if (discoverMode) { runDiscover(); renderDiscoverSidebar(); draw(); }
+}
 
 // region selection (drag-select on canvas)
 let selRect = null;           // {r1,c1,r2,c2} normalised, null when none
@@ -542,6 +605,8 @@ let discoverMode = false;
 let discoverMap = new Map();
 const collapsedDiscoverCells = new Set();
 let discoverRefreshTimer = null;
+let discoverHoveredKey = null;  // cell key currently under mouse
+let discoverFocusedKey = null;  // cell key locked by click
 
 // ═══════════════════════════════════════════════
 // CANVAS
@@ -707,6 +772,7 @@ function runDiscover() {
               if (ex) { if (ex.letter !== letters[j]) { valid=false; break; } ov++; }
             }
             if (!valid || ov < 2) continue;
+            if (!placementPassesFlags(startRow, startCol, dir, len)) continue;
 
             cellCandidates.push({word, row:startRow, col:startCol, dir, overlapCount:ov});
             break; // one placement per dir per word
@@ -742,6 +808,8 @@ function toggleDiscover() {
 function closeDiscover() {
   discoverMode = false;
   discoverMap = new Map();
+  discoverHoveredKey = null;
+  discoverFocusedKey = null;
   document.getElementById('discover-sidebar').classList.add('hidden');
   const btn = document.getElementById('btn-discover');
   btn.style.background = '';
@@ -751,6 +819,8 @@ function closeDiscover() {
 }
 
 function renderDiscoverSidebar() {
+  discoverFocusedKey = null;
+  discoverHoveredKey = null;
   const summary = document.getElementById('discover-summary');
   const scroll  = document.getElementById('discover-scroll');
 
@@ -825,6 +895,71 @@ function toggleDiscoverCell(key) {
   else collapsedDiscoverCells.add(key);
   const el = document.querySelector(`.discover-cell-group[data-key="${key}"]`);
   if (el) el.classList.toggle('collapsed', collapsedDiscoverCells.has(key));
+}
+
+// Hover: highlight one group, dim others (no filtering)
+function applyDiscoverHighlight(key) {
+  const groups = document.querySelectorAll('.discover-cell-group');
+  groups.forEach(g => {
+    g.classList.remove('discover-highlighted', 'discover-dimmed', 'discover-focused');
+    if (key) {
+      if (g.dataset.key === key) {
+        g.classList.add('discover-highlighted');
+        g.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      } else {
+        g.classList.add('discover-dimmed');
+      }
+    }
+  });
+}
+
+// Click: show only focused cell's group, hide others; update summary
+function applyDiscoverFocus(key) {
+  const scroll = document.getElementById('discover-scroll');
+  const summary = document.getElementById('discover-summary');
+  const info = discoverMap.get(key);
+  if (!info) return;
+
+  const [r, c] = key.split(',').map(Number);
+
+  // Update summary
+  summary.innerHTML = `<span style="color:var(--accent3)">📍 (${c},${r}) = ${cells[r][c]?.letter}</span>
+    &nbsp;·&nbsp;${info.candidates.length} candidate${info.candidates.length!==1?'s':''}
+    &nbsp;<span style="cursor:pointer;color:var(--text2);font-size:0.65rem" onclick="clearDiscoverFocus()">✕ show all</span>`;
+
+  // Render only this cell's candidates
+  const sorted = [...info.candidates].sort((a,b) => b.overlapCount - a.overlapCount);
+  const byDir = { h: sorted.filter(x=>x.dir==='h'), v: sorted.filter(x=>x.dir==='v') };
+
+  let html = `<div class="discover-cell-group discover-focused" data-key="${key}">
+    <div class="discover-cell-words">`;
+
+  for (const [dir, items] of Object.entries(byDir)) {
+    if (!items.length) continue;
+    html += `<div class="cand-dir">${dir==='h'?'→ Horizontal':'↓ Vertical'}</div>`;
+    for (const item of items) {
+      const cat = catForWord(item.word);
+      const dotStyle = cat ? `background:${cat.color}` : 'background:#555';
+      html += `<div class="cand-item"
+        data-word="${encodeURIComponent(item.word)}"
+        data-row="${item.row}" data-col="${item.col}" data-dir="${item.dir}"
+        onmouseenter="showPreview(this)" onmouseleave="clearPreview()"
+        onclick="discoverPlace(this)">
+        <span class="cand-dot" style="${dotStyle}"></span>
+        <span>${esc(item.word)}</span>
+        <span class="cand-badge">${item.overlapCount}</span>
+      </div>`;
+    }
+  }
+
+  html += `</div></div>`;
+  scroll.innerHTML = html;
+}
+
+function clearDiscoverFocus() {
+  discoverFocusedKey = null;
+  discoverHoveredKey = null;
+  renderDiscoverSidebar();
 }
 
 function discoverPlace(el) {
@@ -1039,13 +1174,16 @@ function draw() {
   const selWordIds = selectedCell && cells[selectedCell.row]?.[selectedCell.col]
     ? cells[selectedCell.row][selectedCell.col].wordIds : new Set();
 
-  // preview
-  const prevMap = new Map();
-  if (previewWord) {
-    const letters = stripWord(previewWord.word);
+  // preview — single candidate hover (previewWord) or all-placements hover (previewWordAll)
+  const prevMap = new Map(); // key -> letter
+  const prevSources = previewWordAll
+    ? previewWordAll
+    : (previewWord ? [previewWord] : []);
+  for (const pw of prevSources) {
+    const letters = stripWord(pw.word);
     for (let i=0;i<letters.length;i++) {
-      const r = previewWord.dir==='h' ? previewWord.row : previewWord.row+i;
-      const c = previewWord.dir==='h' ? previewWord.col+i : previewWord.col;
+      const r = pw.dir==='h' ? pw.row : pw.row+i;
+      const c = pw.dir==='h' ? pw.col+i : pw.col;
       prevMap.set(`${r},${c}`, letters[i]);
     }
   }
@@ -1182,6 +1320,16 @@ canvas.addEventListener('mousedown', e => {
 canvas.addEventListener('mousemove', e => {
   const {row,col} = cellFromEvent(e);
   document.getElementById('coords').textContent = `${col}, ${row}`;
+
+  if (discoverMode && !discoverFocusedKey) {
+    const key = `${row},${col}`;
+    const newHover = discoverMap.has(key) ? key : null;
+    if (newHover !== discoverHoveredKey) {
+      discoverHoveredKey = newHover;
+      applyDiscoverHighlight(discoverHoveredKey);
+    }
+  }
+
   if (!selDragging || !selDragStart) return;
   const r1=Math.min(selDragStart.row,row), r2=Math.max(selDragStart.row,row);
   const c1=Math.min(selDragStart.col,col), c2=Math.max(selDragStart.col,col);
@@ -1206,23 +1354,40 @@ canvas.addEventListener('mouseup', e => {
     document.getElementById('mode-bar').textContent = 'REGION';
     updateCandidates();
   } else {
-    // Simple click — behave as before
-    selRect = null;
-    previewWord = null;
-    if (selectedCell && selectedCell.row===clampedRow && selectedCell.col===clampedCol) {
-      currentDir = currentDir==='h'?'v':'h'; updateDirUI();
-    } else { selectedCell = {row:clampedRow, col:clampedCol}; }
-    document.getElementById('mode-bar').textContent = 'EDIT';
-    updateCandidates();
+    // Simple click
+    const key = `${clampedRow},${clampedCol}`;
+    if (discoverMode && discoverMap.has(key)) {
+      // Toggle focus on this discover cell
+      if (discoverFocusedKey === key) {
+        discoverFocusedKey = null;
+        discoverHoveredKey = key;
+        applyDiscoverHighlight(key);
+      } else {
+        discoverFocusedKey = key;
+        discoverHoveredKey = null;
+        applyDiscoverFocus(key);
+      }
+    } else {
+      selRect = null;
+      previewWord = null;
+      if (selectedCell && selectedCell.row===clampedRow && selectedCell.col===clampedCol) {
+        currentDir = currentDir==='h'?'v':'h'; updateDirUI();
+      } else { selectedCell = {row:clampedRow, col:clampedCol}; }
+      document.getElementById('mode-bar').textContent = 'EDIT';
+      updateCandidates();
+    }
   }
   draw();
 });
 
 canvas.addEventListener('mouseleave', e => {
   if (selDragging) {
-    // Finalise on leave too
     selDragging = false;
     draw();
+  }
+  if (discoverMode && !discoverFocusedKey && discoverHoveredKey) {
+    discoverHoveredKey = null;
+    applyDiscoverHighlight(null);
   }
 });
 
@@ -1403,6 +1568,51 @@ viewport.addEventListener('wheel',e=>{
 },{passive:false});
 
 // ═══════════════════════════════════════════════
+// PLACEMENT FLAG VALIDATION
+// ═══════════════════════════════════════════════
+
+// Flag A — "No inline runs"
+// Returns true (fail) if the candidate word, when placed at (startRow,startCol,dir),
+// runs in the same direction as any existing placed word it overlaps with.
+// "Overlap" here means sharing a cell — i.e. the existing word also passes through that cell.
+function failsInlineRun(startRow, startCol, dir, len) {
+  for (let i = 0; i < len; i++) {
+    const r = dir==='h' ? startRow : startRow+i;
+    const c = dir==='h' ? startCol+i : startCol;
+    const cell = cells[r][c];
+    if (!cell || !cell.wordIds.size) continue;
+    // Check if any word in this cell runs the same direction
+    for (const id of cell.wordIds) {
+      const pw = placedWords.find(p => p.id === id);
+      if (pw && pw.dir === dir) return true;
+    }
+  }
+  return false;
+}
+
+// Flag B — "No adjacency"
+// Returns true (fail) if the cell immediately before the word's start
+// or immediately after the word's end is occupied.
+function failsAdjacency(startRow, startCol, dir, len) {
+  // Cell just before start
+  const preR = dir==='h' ? startRow : startRow-1;
+  const preC = dir==='h' ? startCol-1 : startCol;
+  if (preR >= 0 && preC >= 0 && cells[preR][preC]) return true;
+  // Cell just after end
+  const endR = dir==='h' ? startRow : startRow+len;
+  const endC = dir==='h' ? startCol+len : startCol;
+  if (endR < GRID_SIZE && endC < GRID_SIZE && cells[endR][endC]) return true;
+  return false;
+}
+
+// Master gate — call after confirming letter-compatibility
+function placementPassesFlags(startRow, startCol, dir, len) {
+  if (flags.inline   && failsInlineRun(startRow, startCol, dir, len)) return false;
+  if (flags.adjacent && failsAdjacency(startRow, startCol, dir, len)) return false;
+  return true;
+}
+
+// ═══════════════════════════════════════════════
 // CANDIDATES
 // ═══════════════════════════════════════════════
 function getCandidates(selRow, selCol) {
@@ -1424,6 +1634,7 @@ function getCandidates(selRow, selCol) {
           if (ex){if(ex.letter!==letters[j]){valid=false;break;}ov++;}
         }
         if (!valid) continue;
+        if (!placementPassesFlags(startRow, startCol, dir, len)) continue;
         results.push({word, row:startRow, col:startCol, dir, overlapCount:ov});
         break;
       }
@@ -1482,7 +1693,43 @@ function showPreview(el){
   previewWord={word:decodeURIComponent(el.dataset.word),row:+el.dataset.row,col:+el.dataset.col,dir:el.dataset.dir};
   draw();
 }
-function clearPreview(){previewWord=null;draw();}
+function clearPreview(){ previewWord=null; previewWordAll=null; draw(); }
+
+// Returns every valid placement of `word` on the current grid
+function getAllPlacements(word) {
+  const letters = stripWord(word);
+  const len = letters.length;
+  const placements = [];
+  for (const dir of ['h','v']) {
+    const rowMax = dir==='h' ? GRID_SIZE     : GRID_SIZE - len;
+    const colMax = dir==='h' ? GRID_SIZE - len : GRID_SIZE;
+    for (let sr=0; sr<=rowMax; sr++) {
+      for (let sc=0; sc<=colMax; sc++) {
+        let valid = true;
+        for (let i=0; i<len; i++) {
+          const r = dir==='h' ? sr     : sr+i;
+          const c = dir==='h' ? sc+i   : sc;
+          const ex = cells[r][c];
+          if (ex && ex.letter !== letters[i]) { valid=false; break; }
+        }
+        if (valid && placementPassesFlags(sr, sc, dir, len)) placements.push({word, row:sr, col:sc, dir});
+      }
+    }
+  }
+  return placements;
+}
+
+function showWordAllPlacements(encodedWord) {
+  const word = decodeURIComponent(encodedWord);
+  previewWord = null;
+  previewWordAll = getAllPlacements(word);
+  draw();
+}
+
+function clearWordAllPlacements() {
+  previewWordAll = null;
+  draw();
+}
 function placeFromCandidate(el){
   placeWordOnGrid(decodeURIComponent(el.dataset.word),+el.dataset.row,+el.dataset.col,el.dataset.dir);
   previewWord=null; updateCandidates();
@@ -1569,6 +1816,7 @@ function getDictCandidates(selRow, selCol, dict) {
           }
         }
         if (!valid || overlapCount < 2) continue;
+        if (!placementPassesFlags(startRow, startCol, dir, len)) continue;
 
         const key = `${word}|${dir}|${startRow}|${startCol}`;
         if (seen.has(key)) continue;
@@ -1754,7 +2002,9 @@ function renderWordList() {
       html+=`<div class="word-item${isPlaced?' placed':''}" draggable="true"
           data-word="${encodeURIComponent(word)}" data-cat="${cat.id}"
           ondragstart="wordDragStart(event,'${cat.id}')"
-          ondragend="wordDragEnd()">
+          ondragend="wordDragEnd()"
+          onmouseenter="showWordAllPlacements('${encodeURIComponent(word)}')"
+          onmouseleave="clearWordAllPlacements()">
           <span class="word-dot"></span>
           <span class="word-label" title="${esc(word)}">${esc(word)}</span>
           <select class="word-move-select" title="Move to category"
