@@ -582,6 +582,7 @@ canvas { display: block; image-rendering: pixelated; }
     <button class="btn" onclick="clearGrid()">Clear Grid</button>
     <button class="btn" id="btn-discover" onclick="toggleDiscover()" title="Find placement opportunities">🔎 Discover</button>
     <button class="btn" id="btn-clues" onclick="toggleClues()" title="Edit word clues">📝 Clues</button>
+    <button class="btn" onclick="exportPrint()" title="Export printable crossword (A4)">🖨️ Print</button>
     <button class="btn" onclick="exportState()">Export</button>
     <button class="btn" onclick="importState()">Import</button>
   </div>
@@ -2718,6 +2719,200 @@ function loadStateJSON(text) {
   clues = data.clues || {};
   updateCatSelect(); rescanPlacedWords(); draw();
   saveToLocalStorage();
+}
+
+function exportPrint() {
+  if (!placedWords.length) { alert('No words placed on the grid yet.'); return; }
+
+  const {cellNum, numbered} = getWordNumbers();
+
+  // Find bounding box of all placed cells
+  let minR=GRID_SIZE, maxR=0, minC=GRID_SIZE, maxC=0;
+  for (let r=0;r<GRID_SIZE;r++) for (let c=0;c<GRID_SIZE;c++) {
+    if (cells[r][c]) { minR=Math.min(minR,r); maxR=Math.max(maxR,r); minC=Math.min(minC,c); maxC=Math.max(maxC,c); }
+  }
+  const rows = maxR - minR + 1;
+  const cols = maxC - minC + 1;
+
+  // Build cell colour map: "r,c" -> rgba colour at ~50% of the web view colour
+  const cellColor = new Map();
+  for (const pw of placedWords) {
+    const cat = pw.catId ? catById(pw.catId) : null;
+    const {r:cr, g:cg, b:cb} = cat ? hexToRgb(cat.color) : {r:200,g:200,b:200};
+    // Use the category colour at low opacity (matching ~50% of web view lightened colour)
+    const tint = `rgba(${cr},${cg},${cb},0.18)`;
+    const letters = stripWord(pw.word);
+    for (let i=0;i<letters.length;i++) {
+      const r = pw.dir==='h' ? pw.row : pw.row+i;
+      const c = pw.dir==='h' ? pw.col+i : pw.col;
+      if (!cellColor.has(`${r},${c}`)) cellColor.set(`${r},${c}`, tint);
+    }
+  }
+
+  // Build grid HTML — only letter cells get borders; empty cells are invisible
+  let gridRows = '';
+  for (let r=minR; r<=maxR; r++) {
+    gridRows += '<tr>';
+    for (let c=minC; c<=maxC; c++) {
+      const cell = cells[r][c];
+      if (!cell) {
+        gridRows += '<td class="empty"></td>';
+      } else {
+        const key = `${r},${c}`;
+        const bg = cellColor.get(key) || 'rgba(200,200,200,0.15)';
+        const num = cellNum.get(key);
+        gridRows += `<td class="filled" style="background:${bg}">`;
+        if (num !== undefined) gridRows += `<span class="cell-num">${num}</span>`;
+        gridRows += '</td>';
+      }
+    }
+    gridRows += '</tr>';
+  }
+
+  // Build clues HTML
+  const across = numbered.filter(n=>n.dir==='h');
+  const down   = numbered.filter(n=>n.dir==='v');
+
+  const renderClueList = (items) => items.map(item => {
+    const clue = clues[item.word] || '_______________________________________________';
+    return `<div class="clue-line"><span class="clue-n">${item.num}.</span><span class="clue-txt">${esc(clue)}</span></div>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Crossword</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Georgia, 'Times New Roman', serif;
+    background: #fff;
+    color: #111;
+    padding: 14mm 15mm 14mm;
+    width: 210mm;
+    min-height: 297mm;
+  }
+  h1 {
+    font-size: 18pt;
+    font-weight: bold;
+    text-align: center;
+    letter-spacing: 0.05em;
+    margin-bottom: 6mm;
+    text-transform: uppercase;
+  }
+  .grid-wrap {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 7mm;
+  }
+  table {
+    border-collapse: collapse;
+  }
+  td {
+    width: var(--cs);
+    height: var(--cs);
+    position: relative;
+    vertical-align: top;
+    /* no border by default */
+    border: none;
+  }
+  td.empty {
+    /* invisible — no background, no border */
+    background: transparent;
+  }
+  td.filled {
+    border: 0.6pt solid #555;
+    /* background set inline */
+  }
+  .cell-num {
+    position: absolute;
+    top: 1px;
+    left: 1.5px;
+    font-size: var(--nfs);
+    font-family: Arial, sans-serif;
+    font-weight: 600;
+    color: #222;
+    line-height: 1;
+  }
+  .clues-section {
+    display: flex;
+    gap: 6mm;
+    margin-top: 2mm;
+  }
+  .clues-col {
+    flex: 1;
+  }
+  .clues-col h2 {
+    font-size: 11pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-bottom: 0.5pt solid #555;
+    padding-bottom: 1.5mm;
+    margin-bottom: 2.5mm;
+  }
+  .clue-line {
+    display: flex;
+    gap: 2mm;
+    margin-bottom: 1.8mm;
+    font-size: 9pt;
+    line-height: 1.35;
+  }
+  .clue-n {
+    flex-shrink: 0;
+    font-weight: bold;
+    min-width: 7mm;
+    text-align: right;
+    color: #333;
+  }
+  .clue-txt {
+    flex: 1;
+  }
+  @media print {
+    @page { size: A4 portrait; margin: 14mm 15mm; }
+    body { padding: 0; width: 100%; }
+  }
+</style>
+<script>
+  // Auto-compute cell size to fit grid within ~170mm width and ~180mm height
+  window.onload = function() {
+    const maxW = 170; // mm available for grid width
+    const maxH = 185; // mm available for grid height
+    const cols = ${cols};
+    const rows = ${rows};
+    const csByW = maxW / cols;
+    const csByH = maxH / rows;
+    const cs = Math.min(csByW, csByH, 13); // cap at 13mm per cell
+    const nfs = Math.max(4, cs * 0.28);
+    document.documentElement.style.setProperty('--cs', cs + 'mm');
+    document.documentElement.style.setProperty('--nfs', nfs + 'pt');
+  };
+<\/script>
+</head>
+<body>
+<h1>Crossword</h1>
+<div class="grid-wrap">
+  <table>${gridRows}</table>
+</div>
+<div class="clues-section">
+  <div class="clues-col">
+    <h2>Across</h2>
+    ${renderClueList(across)}
+  </div>
+  <div class="clues-col">
+    <h2>Down</h2>
+    ${renderClueList(down)}
+  </div>
+</div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  // Trigger print dialog after a short delay for rendering
+  setTimeout(() => win.print(), 600);
 }
 
 function exportState() {
