@@ -2785,6 +2785,10 @@ function exportPrint() {
 <title>Crossword</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, table, td {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
   body {
     font-family: Georgia, 'Times New Roman', serif;
     background: #fff;
@@ -2872,6 +2876,10 @@ function exportPrint() {
   @media print {
     @page { size: A4 portrait; margin: 14mm 15mm; }
     body { padding: 0; width: 100%; }
+    td.filled {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
   }
 </style>
 <script>
